@@ -49,6 +49,10 @@ flowchart TD
     D[data/documents] -->|POST /documents/ingest| API
 ```
 
+Full flow, from `docker compose up` through startup, ingestion and every chat-request path (document / database / combined), with the responsible file named at each step:
+
+![Local GenAI Data Assistant – complete flow diagram](docs/images/architecture-flow.png)
+
 | Layer | Choice |
 |---|---|
 | API | FastAPI (`app/main.py`) |
