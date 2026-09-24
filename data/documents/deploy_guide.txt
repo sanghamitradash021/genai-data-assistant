@@ -1,0 +1,15 @@
+Deployment Guide
+
+This guide explains how to deploy the application to a production server.
+
+Prerequisites: a Linux host with Docker and Docker Compose installed, and a domain name pointing at
+the server's IP address.
+
+Steps:
+1. Copy the .env.production file to the server and fill in the database credentials.
+2. Run docker compose -f docker-compose.prod.yml pull to fetch the latest images.
+3. Run docker compose -f docker-compose.prod.yml up -d to start the containers.
+4. Point your reverse proxy at port 8080 and enable TLS with certbot.
+5. Check the /health endpoint to confirm all services are reachable.
+
+Rolling back: run docker compose down and redeploy the previous image tag.

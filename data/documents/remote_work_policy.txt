@@ -1,0 +1,19 @@
+ACME CORP - REMOTE WORK POLICY
+
+Eligibility
+All employees who have completed their 3-month probation may work remotely up to 3 days per week.
+Fully remote arrangements require written approval from a department head.
+
+Core hours
+Remote employees must be available between 10:00 and 16:00 in their local time zone.
+
+Equipment
+The company provides a laptop and a monitor. A one-time home-office stipend of $400 is available after probation.
+
+Security requirements
+- Company VPN must be used on any public or home network when accessing internal systems.
+- Devices must use full-disk encryption and automatic screen lock after 5 minutes.
+- Company data must never be stored on personal cloud storage.
+
+Working abroad
+Working from another country is allowed for up to 20 days per year with HR and Legal approval, for tax and compliance reasons.

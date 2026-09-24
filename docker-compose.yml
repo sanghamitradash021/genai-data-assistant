@@ -1,0 +1,100 @@
+# Everything runs locally. No business data leaves this compose network:
+# LLM + embeddings are served by Ollama, vectors by Qdrant, rows by PostgreSQL.
+services:
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      CHAT_MODEL: ${CHAT_MODEL:-llama3.1:8b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      QDRANT_URL: http://qdrant:6333
+      DATABASE_URL_RO: postgresql://assistant_ro:${READONLY_PASSWORD:-change-me-readonly}@postgres:5432/shop
+      DATABASE_URL_RW: postgresql://shop_admin:${POSTGRES_PASSWORD:-change-me-admin}@postgres:5432/shop
+      DOCUMENTS_DIR: /srv/data/documents
+      AUTO_INGEST: "true"
+      RAG_DEBUG: ${RAG_DEBUG:-false}
+    volumes:
+      - ./data/documents:/srv/data/documents
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
+
+  ui:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-admin}
+      POSTGRES_DB: shop
+      READONLY_PASSWORD: ${READONLY_PASSWORD:-change-me-readonly}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop_admin -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # NVIDIA GPU (optional): uncomment
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # One-shot job: pull the models into the ollama volume (first run downloads, ~5 GB).
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - ollama pull ${CHAT_MODEL:-llama3.1:8b} && ollama pull ${EMBED_MODEL:-nomic-embed-text}
+    restart: "no"
+
+volumes:
+  pgdata:
+  qdrant_data:
+  ollama_data:
