@@ -43,6 +43,8 @@ class VectorStore:
             try:
                 self._client.create_payload_index(self._collection, field, schema)
             except Exception:
+                # Best-effort: an index that fails to create only degrades filter/scroll performance,
+                # it never breaks search correctness. Logged (with traceback) rather than silently dropped.
                 log.warning("payload index %s not created", field, exc_info=True)
         self._indexes_ready = True
 

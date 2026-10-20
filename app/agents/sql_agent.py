@@ -27,7 +27,12 @@ class SQLDraft(BaseModel):
 
 @lru_cache
 def schema_prompt() -> str:
-    """Introspect the live schema (only tables the read-only role may see)."""
+    """Introspect the live schema (only tables the read-only role may see).
+
+    Cached for the lifetime of the process: a schema migration applied after startup will not be
+    picked up without a restart (or schema_prompt.cache_clear()). Acceptable for this project's
+    static demo schema; revisit if migrations are ever applied against a running instance.
+    """
     with psycopg.connect(settings.database_url_ro, connect_timeout=5) as conn:
         rows = conn.execute(
             """SELECT table_name, column_name, data_type FROM information_schema.columns
