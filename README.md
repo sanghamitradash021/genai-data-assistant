@@ -29,6 +29,28 @@ curl -s localhost:8000/chat -H 'content-type: application/json' \
 
 ## Architecture
 
+
+
+```mermaid
+flowchart TD
+    User --> API[FastAPI]
+    API --> Router{Router}
+    Router -->|document| RAG[RAG Agent]
+    Router -->|database| SQL[SQL Agent]
+    Router -->|both| RAG
+    Router -->|both| SQL
+    RAG --> Qdrant[(Qdrant)]
+    SQL --> Postgres[(PostgreSQL)]
+    RAG --> Answer[Answer]
+    SQL --> Answer
+    Answer --> API
+```
+
+A question hits FastAPI, a LangGraph router decides *document*, *database*, or *both*. The RAG agent searches Qdrant, the SQL agent queries PostgreSQL, and either result feeds one final answer. Every LLM step (routing, SQL generation, answering) runs on the same local Ollama model — nothing leaves the machine.
+
+<details>
+<summary>Full detailed flow (click to expand)</summary>
+
 ```mermaid
 flowchart TD
     U[Client] -->|POST /chat| API[FastAPI]
@@ -50,6 +72,8 @@ flowchart TD
 ```
 
 Full flow, from `docker compose up` through startup, ingestion and every chat-request path (document / database / combined), with the responsible file named at each step:
+
+</details>
 
 ![Local GenAI Data Assistant – complete flow diagram](docs/images/architecture-flow.png)
 

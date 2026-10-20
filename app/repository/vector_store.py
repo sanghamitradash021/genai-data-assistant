@@ -43,7 +43,7 @@ class VectorStore:
             try:
                 self._client.create_payload_index(self._collection, field, schema)
             except Exception:
-                log.debug("payload index %s not created", field, exc_info=True)
+                log.warning("payload index %s not created", field, exc_info=True)
         self._indexes_ready = True
 
     def _ensure_collection(self, dim: int) -> None:
