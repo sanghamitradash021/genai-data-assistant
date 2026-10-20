@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from app import documents as d
-from app.documents import Section, chunk_sections, split_markdown
+from app.services import document_service as d
+from app.services.document_service import Section, chunk_sections, split_markdown
 
 FIXTURE = Path(__file__).parent / "fixtures" / "CLAUDEEE.md"
 

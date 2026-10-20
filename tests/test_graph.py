@@ -1,8 +1,10 @@
 import pytest
 
-from app.graph import GraphDeps, build_graph, heuristic_route
-from app.models import Hit, RouteDecision, SQLResult
-from app.memory import ConversationStore
+from app.agents.chat_agent import GraphDeps, build_graph, heuristic_route
+from app.models.retrieval import Hit
+from app.models.routing import RouteDecision
+from app.models.sql import SQLResult
+from app.repository.conversation_store import ConversationStore
 
 
 def make(route, calls, fail_router=False):

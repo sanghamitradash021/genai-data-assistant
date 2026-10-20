@@ -12,10 +12,11 @@ from pathlib import Path
 import pytest
 from qdrant_client import QdrantClient
 
-from app import retrieval, vectorstore
-from app.config import settings
-from app.graph import GraphDeps, build_graph, initial_state
-from app.condense import condense_question
+from app.repository import vector_store as vectorstore
+from app.services import retrieval_service as retrieval
+from app.config.settings import settings
+from app.agents.chat_agent import GraphDeps, build_graph, initial_state
+from app.agents.condense import condense_question
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -142,7 +143,7 @@ def make_pipeline(store, llm_route_result):
     "",
 ])
 def test_single_intent_route_ignores_the_llm_rewritten_subquestion(store, bad_doc_question):
-    from app.models import RouteDecision
+    from app.models.routing import RouteDecision
     pipeline = make_pipeline(store, RouteDecision(route="document", doc_question=bad_doc_question, db_question=""))
     out, sql_calls = pipeline("how to run tests")
     assert out["doc_question"] == "how to run tests"  # the model's rewrite is discarded, not retrieved on
@@ -150,15 +151,15 @@ def test_single_intent_route_ignores_the_llm_rewritten_subquestion(store, bad_do
 
 
 def test_single_intent_database_route_also_ignores_llm_rewrite(store):
-    from app.models import RouteDecision
+    from app.models.routing import RouteDecision
     pipeline = make_pipeline(store, RouteDecision(route="database", doc_question="", db_question="unrelated made-up question"))
     out, _ = pipeline("how many customers are there?")
     assert out["db_question"] == "how many customers are there?"
 
 
 def test_both_route_still_uses_the_llm_split_for_the_two_sub_questions():
-    from app.models import RouteDecision
-    from app.routing import rule_route
+    from app.models.routing import RouteDecision
+    from app.services.routing_service import rule_route
     calls = []
     deps = GraphDeps(
         condense=lambda q, h: q,

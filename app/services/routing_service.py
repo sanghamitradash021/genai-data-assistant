@@ -6,8 +6,8 @@ model can never send "How many vacation days are there?" to SQL.
 """
 import re
 
-from .models import RouteDecision
-from .security import is_sensitive_request, is_write_request
+from app.models.routing import RouteDecision
+from app.utils.security import is_sensitive_request, is_write_request
 
 # Things that live in the company documents, including technical documentation about a software project.
 DOC_SIGNAL = re.compile(

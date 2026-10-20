@@ -1,8 +1,8 @@
 import pytest
 from docx import Document
 
-from app import documents
-from app.security import neutralize_context, safe_filename
+from app.services import document_service as documents
+from app.utils.security import neutralize_context, safe_filename
 
 
 def test_txt_and_md_load_and_chunk(tmp_path):

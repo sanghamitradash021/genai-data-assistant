@@ -14,8 +14,9 @@ import re
 from dataclasses import replace
 from typing import Iterable
 
-from .config import Settings, settings as default_settings
-from .models import Hit
+from app.config.settings import Settings
+from app.config.settings import settings as default_settings
+from app.models.retrieval import Hit
 
 log = logging.getLogger(__name__)
 

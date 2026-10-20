@@ -2,8 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.models import Hit, SQLResult
-from app.schemas import DocumentInfo
+from app.models.retrieval import Hit
+from app.models.sql import SQLResult
+from app.schemas.documents import DocumentInfo
 
 
 class FakeGraph:

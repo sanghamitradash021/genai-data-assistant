@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 from qdrant_client import QdrantClient, models
 
-from .config import settings
-from . import retrieval
-from .documents import CHUNKER_VERSION, chunk_sections, doc_id_for, load_sections
-from .llm import embeddings
-from .models import Hit
-from .schemas import DocumentInfo
+from app.config.settings import settings
+from app.llms.ollama_client import embeddings
+from app.models.retrieval import Hit
+from app.schemas.documents import DocumentInfo
+from app.services import retrieval_service as retrieval
+from app.services.document_service import CHUNKER_VERSION, chunk_sections, doc_id_for, load_sections
 
 log = logging.getLogger(__name__)
 

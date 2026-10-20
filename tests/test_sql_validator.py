@@ -1,6 +1,7 @@
 import pytest
 
-from app.sql_validator import SQLValidationError, validate_sql
+from app.exceptions.sql import SQLValidationError
+from app.tools.sql_validator import validate_sql
 
 
 def v(sql):

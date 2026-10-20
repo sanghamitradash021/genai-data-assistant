@@ -1,6 +1,6 @@
 import pytest
 
-from app.condense import condense_question, needs_rewrite, preserves_terms, uses_history
+from app.agents.condense import condense_question, needs_rewrite, preserves_terms, uses_history
 
 
 def hist(prev):

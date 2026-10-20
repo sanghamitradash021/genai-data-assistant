@@ -55,8 +55,8 @@ Full flow, from `docker compose up` through startup, ingestion and every chat-re
 
 | Layer | Choice |
 |---|---|
-| API | FastAPI (`app/main.py`) |
-| Orchestration | LangGraph `StateGraph` (`app/graph.py`) |
+| API | FastAPI (`app/main.py`, `app/health.py`, `app/routes/`) |
+| Orchestration | LangGraph `StateGraph` (`app/agents/chat_agent.py`) |
 | LLM / embeddings | Ollama: `llama3.1:8b`, `nomic-embed-text` |
 | Vector DB | Qdrant, cosine, one point per chunk with `filename/page/chunk_index` payload |
 | SQL | PostgreSQL 16, `sqlglot` validator, `psycopg` |
@@ -67,7 +67,7 @@ Full flow, from `docker compose up` through startup, ingestion and every chat-re
 3. **rag** / **sql** – run alone or *in parallel* for `both`.
 4. **answer** – one LLM call over `<documents>` and `<sql_result>` context; cites source files. Response also returns the sources and the executed SQL with its rows.
 
-### RAG (`app/documents.py`, `app/retrieval.py`, `app/vectorstore.py`)
+### RAG (`app/services/document_service.py`, `app/services/retrieval_service.py`, `app/repository/vector_store.py`)
 1. **Section-aware chunking.** PDF (page-aware) and TXT: recursive splitting (`CHUNK_SIZE`/`CHUNK_OVERLAP`).
    Markdown and DOCX: split on headings (Markdown `#`..`######`, ignoring `#` lines inside code fences; DOCX `Title`/`Heading 1..N` styles; the table of contents is not indexed); one chunk per section, split further only if larger than `CHUNK_SIZE`, and every piece keeps its heading metadata. A document with no headings falls back to one un-headed section, chunked like plain text — heading structure is detected generically, never assumed or hardcoded per file.
    The embedded text is `filename > Parent > Section` + body, so, e.g., "Prisma 7" is anchored to "Database" wherever that heading appears, in any document.
@@ -91,11 +91,11 @@ Full flow, from `docker compose up` through startup, ingestion and every chat-re
 | `RELATIVE_CUTOFF` / `BROAD_RELATIVE_CUTOFF` | 0.8 / 0.6 | drop chunks scoring below this fraction of the best |
 | `MAX_CHUNKS_PER_SECTION` | 2 | section diversity |
 
-### Routing and follow-ups (`app/routing.py`, `app/condense.py`)
+### Routing and follow-ups (`app/services/routing_service.py`, `app/agents/condense.py`)
 - **Router.** Keyword rules first: business nouns (customers, orders, revenue, refunded amounts, stock...) mean *database*; document/technical-documentation vocabulary (policies, leave, ORM, framework, frontend, coding rules, installation, configuration, pricing/billing, "the project", file names like `X.md`...) means *documents*; both means *both*. Technical words alone ("ORM", "database", "SQL", "schema", "PostgreSQL") never mean *database*. The LLM router only decides questions with neither signal, and its prompt says the same. For a single-intent question, only the *route* choice is taken from the LLM — the retrieved/queried text is always the user's own (standalone) question, never the model's rewritten `doc_question`/`db_question`, which a small model can paraphrase into an unrelated question when no actual split is needed. The model's split is used only when the route is genuinely `both`.
 - **Condensation.** The current question is the source of truth. History is used only when the question cannot stand alone (no specific terms of its own such as "What is the time limit?", or an unresolved pronoun like "What do they eat?"); everything else is preserved as typed. A rewrite must keep every original word and may only add words from the recent conversation; otherwise a deterministic fallback is used. Security-sensitive input is never rewritten.
 
-### SQL agent (`app/sql_agent.py`, `app/sql_validator.py`)
+### SQL agent (`app/agents/sql_agent.py`, `app/tools/sql_validator.py`)
 - **Schema-aware prompt**: live column introspection + business rules (what "revenue" means, what "last month" means) + few-shot examples.
 - **Structured output**: model must return `{"sql": "..."}`.
 - **Validation** (`sqlglot`, fail-closed): one statement, root must be SELECT/UNION, no DML/DDL/`INTO`/`FOR UPDATE`, table allowlist, no `pg_*`/`dblink`/table functions, comments stripped, `LIMIT` injected. The *re-generated* SQL is what runs.
@@ -138,12 +138,27 @@ pytest
 Covers the SQL validator (injection/DDL/DML/catalog access), loaders/chunking, LangGraph routing & fallback with injected fakes, conversation store, and all API endpoints (fake graph/store). No Ollama/Docker needed.
 
 ## Project layout
+Layered by responsibility (routes -> agents/services -> repository/tools -> llms), one concern per package:
 ```
-app/           main.py graph.py sql_agent.py sql_validator.py vectorstore.py documents.py
-               llm.py memory.py security.py config.py models.py schemas.py
+app/
+  main.py              FastAPI app: creates `app`, mounts routers, wires the lifespan
+  health.py            GET /health, /health/live
+  starter.py           startup lifespan + data/documents/ auto-ingest (shared with POST /documents/ingest)
+  routes/              HTTP layer: chat_routes.py, document_routes.py, dependencies.py (get_store/get_graph)
+  agents/              orchestration: chat_agent.py (LangGraph pipeline), condense.py, sql_agent.py
+  services/            business logic: document_service.py (load/chunk), retrieval_service.py (rank), routing_service.py
+  repository/          data access: vector_store.py (Qdrant), conversation_store.py (in-memory history)
+  tools/               sql_validator.py (SELECT-only guardrail, used by agents/sql_agent.py)
+  llms/                ollama_client.py (chat model / embeddings / structured-output singletons)
+  prompts/             system prompt text: router_prompt.py, answer_prompt.py, condense_prompt.py, sql_prompt.py
+  models/              internal domain objects: retrieval.py (Hit), sql.py (SQLResult), routing.py (RouteDecision)
+  schemas/             API request/response contracts: chat.py, documents.py, health.py
+  config/              settings.py (env-driven Settings singleton)
+  exceptions/          sql.py (SQLValidationError)
+  utils/               security.py (sanitization, injection/secret detection, safe filenames)
 db/            schema, seed, roles
 data/documents sample files
-tests/         pytest suite
+tests/         pytest suite (mirrors app/'s module paths)
 docs/API.md    endpoint reference
 ```
 

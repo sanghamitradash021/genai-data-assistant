@@ -7,6 +7,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
+from app.exceptions.sql import SQLValidationError
+
 ALLOWED_TABLES = frozenset({"customers", "products", "orders", "order_items", "refunds"})
 
 _ROOT_TYPES = (exp.Select, exp.Union, exp.Intersect, exp.Except)
@@ -18,15 +20,6 @@ _FORBIDDEN_NAMES = (
 _FORBIDDEN_NODES = tuple(getattr(exp, n) for n in _FORBIDDEN_NAMES if hasattr(exp, n))
 _BLOCKED_FUNCS = {"dblink", "set_config", "current_setting", "version", "txid_current"}
 _BLOCKED_FUNC_PREFIXES = ("pg_", "lo_", "dblink", "query_to_xml", "xpath")
-
-
-class SQLValidationError(ValueError):
-    """retryable=False for security rejections (writes, forbidden functions, system schemas): the agent must
-    not ask the model to "repair" those, or it may swap in an unrelated query."""
-
-    def __init__(self, message: str, retryable: bool = False):
-        super().__init__(message)
-        self.retryable = retryable
 
 
 def validate_sql(sql: str, *, max_rows: int, allowed_tables: frozenset[str] = ALLOWED_TABLES) -> str:

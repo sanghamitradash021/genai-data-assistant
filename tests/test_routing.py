@@ -1,8 +1,10 @@
 import pytest
 
-from app.graph import GraphDeps, build_graph
-from app.models import Hit, RouteDecision, SQLResult
-from app.routing import rule_route
+from app.agents.chat_agent import GraphDeps, build_graph
+from app.models.retrieval import Hit
+from app.models.routing import RouteDecision
+from app.models.sql import SQLResult
+from app.services.routing_service import rule_route
 
 
 @pytest.mark.parametrize(
@@ -118,8 +120,8 @@ def test_documentation_question_never_reaches_sql_even_if_the_llm_router_says_da
 
 
 def test_llm_router_prompt_explains_technical_words_are_not_database():
-    from app.graph import _ROUTER_SYSTEM
-    assert "ORM" in _ROUTER_SYSTEM and "do NOT mean" in _ROUTER_SYSTEM and "DOCUMENTS" in _ROUTER_SYSTEM
+    from app.prompts.router_prompt import ROUTER_SYSTEM
+    assert "ORM" in ROUTER_SYSTEM and "do NOT mean" in ROUTER_SYSTEM and "DOCUMENTS" in ROUTER_SYSTEM
 
 
 @pytest.mark.parametrize("q", [

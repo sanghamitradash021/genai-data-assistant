@@ -1,21 +1,7 @@
-"""Pydantic request/response models for the HTTP API."""
+"""API request/response contracts for POST /chat."""
 from typing import Any
 
 from pydantic import BaseModel, Field
-
-
-class DocumentInfo(BaseModel):
-    id: str
-    filename: str
-    file_type: str
-    chunks: int
-    ingested_at: str
-
-
-class IngestResponse(BaseModel):
-    ingested: list[DocumentInfo]
-    skipped: list[str] = Field(default_factory=list, description="Already indexed (use force=true)")
-    errors: dict[str, str] = Field(default_factory=dict)
 
 
 class ChatRequest(BaseModel):
@@ -49,8 +35,3 @@ class ChatResponse(BaseModel):
     standalone_question: str
     sources: list[Source] = Field(default_factory=list)
     sql: SQLInfo | None = None
-
-
-class HealthResponse(BaseModel):
-    status: str
-    services: dict[str, str]

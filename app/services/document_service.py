@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from .config import settings
+from app.config.settings import settings
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".markdown"}
 

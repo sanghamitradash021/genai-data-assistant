@@ -18,7 +18,8 @@ import logging
 import re
 from typing import Callable
 
-from .security import is_sensitive_request
+from app.prompts.condense_prompt import CONDENSE_SYSTEM as _SYSTEM
+from app.utils.security import is_sensitive_request
 
 log = logging.getLogger(__name__)
 
@@ -53,35 +54,6 @@ _VAGUE = set(
 _REF_WORDS = {"it", "its", "they", "them", "their", "theirs", "he", "him", "his", "she", "her", "that", "those",
               "these", "this", "same", "above", "former", "latter", "such"}
 _TOKEN = re.compile(r"[a-z][a-z0-9'-]*")
-
-_SYSTEM = """You rewrite a user's latest question so it can be understood without the conversation.
-Rules:
-1. Keep EVERY specific word of the latest question. Never make it broader or vaguer.
-2. Only fill in what is missing (a pronoun or omitted subject) using the previous question.
-3. If the latest question is about a different topic, return it unchanged.
-Output ONLY the rewritten question, on one line.
-
-Examples
-Previous: What is the refund policy?
-Latest: What is the time limit?
-Rewritten: What is the time limit for the refund policy?
-
-Previous: Who are the top 5 customers by revenue?
-Latest: What about their total orders?
-Rewritten: What are the total orders of the top 5 customers by revenue?
-
-Previous: What do penguins eat?
-Latest: What do they eat?
-Rewritten: What do penguins eat?
-
-Previous: What do manta rays eat?
-Latest: What causes coral bleaching?
-Rewritten: What causes coral bleaching?
-
-Previous: What is the company's leave policy?
-Latest: What is the security policy?
-Rewritten: What is the security policy?"""
-
 
 def _specific_terms(text: str) -> set[str]:
     """Terms that carry the question's own subject."""

@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 from qdrant_client import QdrantClient
 
-from app import retrieval, vectorstore
-from app.config import settings
-from app.models import Hit
+from app.repository import vector_store as vectorstore
+from app.services import retrieval_service as retrieval
+from app.config.settings import settings
+from app.models.retrieval import Hit
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -137,7 +138,7 @@ def test_query_expansion_maps_vague_concepts_to_document_vocabulary():
 
 def test_debug_logging_lists_candidates_with_scores(caplog):
     cfg = replace(settings, rag_debug=True)
-    with caplog.at_level("INFO", logger="app.retrieval"):
+    with caplog.at_level("INFO", logger="app.services.retrieval_service"):
         retrieval.rank_candidates("which ORM is used?", [hit("c.md", "ORM Prisma", "Database", 0.7)], cfg=cfg)
     text = caplog.text
     assert "Query: which ORM is used?" in text and "Section: Database" in text
@@ -310,8 +311,8 @@ def test_stale_documents_are_detected_for_reindexing(store):
 # ---------------------------------------------------------------- full graph on the real document ---------
 @pytest.fixture
 def pipeline(store):
-    from app.condense import condense_question
-    from app.graph import GraphDeps, _format_context, build_graph, initial_state
+    from app.agents.condense import condense_question
+    from app.agents.chat_agent import GraphDeps, _format_context, build_graph, initial_state
 
     sql_calls = []
     deps = GraphDeps(
