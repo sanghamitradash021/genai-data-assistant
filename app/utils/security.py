@@ -1,3 +1,4 @@
+"""Input sanitization and intent detection: user-text checks, independent of anything an LLM generates."""
 import re
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -23,6 +24,7 @@ def neutralize_context(text: str) -> str:
 
 
 def safe_filename(name: str) -> str:
+    """Reduce to a bare, allowlisted-character basename so upload/delete can never escape docs_dir()."""
     base = re.sub(r"[^A-Za-z0-9._-]", "_", name.replace("\\", "/").split("/")[-1])
     return base.lstrip(".") or "upload"
 

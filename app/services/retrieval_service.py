@@ -11,8 +11,8 @@ refund policy as to a Database section), so exact terms (ORM, Prisma, pnpm, ...)
 import logging
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import replace
-from typing import Iterable
 
 from app.config.settings import Settings
 from app.config.settings import settings as default_settings
@@ -89,7 +89,7 @@ def tokens(text: str) -> set[str]:
 
 def cosine(a: list[float], b: list[float]) -> float:
     na, nb = math.sqrt(sum(x * x for x in a)), math.sqrt(sum(x * x for x in b))
-    return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
+    return sum(x * y for x, y in zip(a, b, strict=True)) / (na * nb) if na and nb else 0.0
 
 
 def heading_search_terms(query: str, limit: int = 5) -> list[str]:
@@ -137,6 +137,7 @@ def query_terms(query: str) -> dict[str, str]:
 
 
 def _is_technical(raw: str) -> bool:
+    """Heuristic for "looks like a technical term" (known word, ACRONYM, has a digit, or camelCase)."""
     return (raw.lower() in TECH_TERMS or (raw.isupper() and len(raw) >= 2) or any(c.isdigit() for c in raw)
             or bool(re.search(r"[a-z][A-Z]", raw)))
 
@@ -195,7 +196,7 @@ def rank_candidates(query: str, hits: list[Hit], mentioned: Iterable[str] = (), 
         hits = [h for h in hits if h.filename.lower() in wanted]  # named document first; others only as fallback
 
     ranked = []
-    for h, (kw, matched) in zip(hits, keyword_scores(query, hits)):
+    for h, (kw, matched) in zip(hits, keyword_scores(query, hits), strict=True):
         file_match = h.filename.lower() in wanted
         final = cfg.semantic_weight * h.semantic + cfg.keyword_weight * kw + (cfg.filename_boost if file_match else 0.0)
         relevant = h.semantic >= cfg.semantic_floor and (
@@ -227,6 +228,7 @@ def select_context(ranked: list[Hit], k: int, cfg: Settings = default_settings, 
 
 
 def _log_candidates(query: str, ranked: list[tuple[bool, Hit]]) -> None:
+    """RAG_DEBUG-only diagnostic dump of every candidate's scores and keep/drop decision."""
     lines = [f"retrieval debug\n  Query: {query}"]
     for ok, h in sorted(ranked, key=lambda r: r[1].score, reverse=True):
         lines.append(

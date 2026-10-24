@@ -3,22 +3,25 @@ import logging
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
 from app.config.settings import settings
-from app.routes.dependencies import get_store
+from app.routes.dependencies import get_store, require_api_key
 from app.schemas.documents import DocumentInfo, IngestResponse
 from app.services import document_service as documents
 from app.starter import docs_dir, ingest_directory
+from app.utils.rate_limit import limiter
 from app.utils.security import safe_filename
 
 log = logging.getLogger("app")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 @router.post("/documents/ingest", response_model=IngestResponse)
+@limiter.limit(lambda: settings.rate_limit_ingest)
 def ingest(
+    request: Request,
     file: UploadFile | None = File(default=None, description="Optional file to upload and index"),
     force: bool = Query(default=False, description="Re-embed files that are already indexed"),
     store=Depends(get_store),
@@ -49,6 +52,7 @@ def ingest(
 
 @router.get("/documents", response_model=list[DocumentInfo])
 def list_documents(store=Depends(get_store)):
+    """List every currently-indexed document."""
     return store.list_documents()
 
 

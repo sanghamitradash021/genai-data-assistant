@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,6 +22,9 @@ class FakeGraph:
             "sql": SQLResult("q", sql="SELECT 1", columns=["n"], rows=[[1]]),
         }
 
+    async def ainvoke(self, state):
+        return self.invoke(state)
+
 
 class FakeStore:
     def __init__(self):
@@ -36,13 +41,21 @@ class FakeStore:
     def stale_doc_ids(self): return set()
 
 
+class _TestClient(TestClient):
+    """TestClient plus the fakes/tmp dir each test needs, declared so attribute access type-checks."""
+
+    graph: FakeGraph
+    store: FakeStore
+    tmp: Path
+
+
 @pytest.fixture
 def client(tmp_path):
-    object.__setattr__(main.settings, "documents_dir", str(tmp_path))  # frozen dataclass
+    object.__setattr__(main.settings, "documents_dir", str(tmp_path))  # frozen pydantic settings
     graph, store = FakeGraph(), FakeStore()
     main.app.dependency_overrides[main.get_graph] = lambda: graph
     main.app.dependency_overrides[main.get_store] = lambda: store
-    c = TestClient(main.app)
+    c = _TestClient(main.app)
     c.graph, c.store, c.tmp = graph, store, tmp_path
     yield c
     main.app.dependency_overrides.clear()

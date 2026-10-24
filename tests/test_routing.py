@@ -1,6 +1,6 @@
 import pytest
 
-from app.agents.chat_agent import GraphDeps, build_graph
+from app.agents.chat_agent import GraphDeps, build_graph, initial_state
 from app.models.retrieval import Hit
 from app.models.routing import RouteDecision
 from app.models.sql import SQLResult
@@ -27,7 +27,8 @@ from app.services.routing_service import rule_route
     ],
 )
 def test_rule_route(q, route):
-    assert rule_route(q).route == route
+    decision = rule_route(q)
+    assert decision is not None and decision.route == route
 
 
 def test_neutral_question_has_no_rule():
@@ -47,7 +48,7 @@ def make(llm_route, calls):
 def test_document_question_never_runs_sql_even_if_llm_router_would_say_database():
     calls = []
     bad = RouteDecision(route="database", db_question="total vacation days")  # the reported misroute
-    out = make(bad, calls).invoke({"question": "vacation days for normal leave policy", "history": []})
+    out = make(bad, calls).invoke(initial_state("vacation days for normal leave policy", []))
     assert out["route"] == "document"
     assert calls == ["rag"]  # no SQL generated or executed, LLM router not even consulted
     assert "sql" not in out or out["sql"] is None
@@ -56,7 +57,7 @@ def test_document_question_never_runs_sql_even_if_llm_router_would_say_database(
 def test_database_question_never_searches_documents():
     calls = []
     out = make(RouteDecision(route="both"), calls).invoke(
-        {"question": "Which are the top 5 customers by revenue?", "history": []})
+        initial_state("Which are the top 5 customers by revenue?", []))
     assert out["route"] == "database" and calls == ["sql"]
 
 
@@ -64,22 +65,27 @@ def test_combined_question_runs_both_and_uses_llm_split():
     calls = []
     llm = RouteDecision(route="both", doc_question="refund policy", db_question="refunded last month")
     out = make(llm, calls).invoke(
-        {"question": "What is the refund policy and how much was refunded last month?", "history": []})
+        initial_state("What is the refund policy and how much was refunded last month?", []))
     assert out["route"] == "both" and set(calls) == {"llm_route", "rag", "sql"}
     assert out["doc_question"] == "refund policy" and out["db_question"] == "refunded last month"
 
 
 def test_combined_falls_back_when_llm_split_fails():
     calls = []
-    deps = GraphDeps(condense=lambda q, h: q, route=lambda q: 1 / 0, retrieve=lambda q: calls.append("rag") or [],
-                     run_sql=lambda q: calls.append("sql") or SQLResult(q), answer=lambda q, h, s: "ok")
-    out = build_graph(deps).invoke({"question": "refund policy and how much was refunded?", "history": []})
+    deps = GraphDeps(
+        condense=lambda q, h: q,
+        route=lambda _q: (_ for _ in ()).throw(ZeroDivisionError("LLM router unavailable")),
+        retrieve=lambda q: calls.append("rag") or [],
+        run_sql=lambda q: calls.append("sql") or SQLResult(q),
+        answer=lambda q, h, s: "ok",
+    )
+    out = build_graph(deps).invoke(initial_state("refund policy and how much was refunded?", []))
     assert out["route"] == "both" and set(calls) == {"rag", "sql"}
 
 
 def test_neutral_question_uses_llm_router():
     calls = []
-    out = make(RouteDecision(route="document"), calls).invoke({"question": "Tell me something", "history": []})
+    out = make(RouteDecision(route="document"), calls).invoke(initial_state("Tell me something", []))
     assert "llm_route" in calls and out["route"] == "document"
 
 
@@ -108,14 +114,15 @@ def test_neutral_question_uses_llm_router():
     ("Which PostgreSQL version does the architecture use?", "document"),
 ])
 def test_technical_words_alone_do_not_mean_database(q, route):
-    assert rule_route(q).route == route
+    decision = rule_route(q)
+    assert decision is not None and decision.route == route
 
 
 @pytest.mark.parametrize("q", ["which ORM is used in CLAUDEEE.md?", "what database is used by the project?",
                                "what are the coding rules?"])
 def test_documentation_question_never_reaches_sql_even_if_the_llm_router_says_database(q):
     calls = []
-    out = make(RouteDecision(route="database", db_question=q), calls).invoke({"question": q, "history": []})
+    out = make(RouteDecision(route="database", db_question=q), calls).invoke(initial_state(q, []))
     assert out["route"] == "document" and calls == ["rag"]
 
 
@@ -134,4 +141,5 @@ def test_llm_router_prompt_explains_technical_words_are_not_database():
     "how do I deploy the application?",
 ])
 def test_generic_documentation_vocabulary_routes_to_documents_not_database(q):
-    assert rule_route(q).route == "document"
+    decision = rule_route(q)
+    assert decision is not None and decision.route == "document"
