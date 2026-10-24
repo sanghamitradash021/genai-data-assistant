@@ -4,10 +4,12 @@ import time
 from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
+from typing import cast
 
 import psycopg
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
+from typing_extensions import LiteralString
 
 from app.config.settings import settings
 from app.exceptions.sql import SQLValidationError
@@ -48,6 +50,7 @@ def schema_prompt() -> str:
 
 
 def _prompt(question: str, prev_sql: str | None, error: str | None) -> list:
+    """Build the SQL-generation prompt; prev_sql/error (if set) turn this into a self-repair retry."""
     system = (
         "You translate questions into a single read-only PostgreSQL SELECT query.\n"
         f"Today's date is {date.today().isoformat()}.\n"
@@ -72,17 +75,27 @@ def _jsonable(v):
 
 
 def _execute(sql: str) -> tuple[list[str], list[list]]:
+    """Run already-validated SQL as the read-only role, under a statement timeout and a row cap."""
     with psycopg.connect(settings.database_url_ro, connect_timeout=5) as conn:
         conn.read_only = True
         with conn.cursor() as cur:
-            cur.execute(f"SET LOCAL statement_timeout = {int(settings.sql_timeout_ms)}")
-            cur.execute(sql)
+            # psycopg's stubs require a LiteralString (a real source-code literal); neither string here is
+            # one, since both are built at runtime. Each is still safe to run: the timeout value is our own
+            # trusted int (never user text), and `sql` has already passed validate_sql()'s sqlglot AST check.
+            # cast() records that out-of-band guarantee for the type checker; it performs no runtime check.
+            cur.execute(cast(LiteralString, f"SET LOCAL statement_timeout = {int(settings.sql_timeout_ms)}"))
+            cur.execute(cast(LiteralString, sql))
+            # None only for a statement that returns no resultset; validate_sql() guarantees a SELECT reaches
+            # here, so this is always populated in practice. Checked explicitly rather than assumed.
+            if cur.description is None:
+                raise psycopg.Error("Query returned no resultset (expected a SELECT)")
             cols = [d.name for d in cur.description]
             rows = [[_jsonable(v) for v in r] for r in cur.fetchmany(settings.sql_max_rows)]
     return cols, rows
 
 
 def _log_query(question, sql, status, error, row_count, duration_ms) -> None:
+    """Audit every attempt (ok / rejected / error) to the app log and the query_log table; never raises."""
     log.info("sql_query status=%s ms=%s rows=%s sql=%s err=%s", status, duration_ms, row_count, sql, error)
     try:
         with psycopg.connect(settings.database_url_rw, connect_timeout=5) as conn:
@@ -96,6 +109,7 @@ def _log_query(question, sql, status, error, row_count, duration_ms) -> None:
 
 
 def run_sql_agent(question: str, max_attempts: int = 2) -> SQLResult:
+    """Text-to-SQL entry point: generate, validate, execute, self-repair on error, and audit-log every attempt."""
     result = SQLResult(question=question)
     if is_write_request(question):  # decided on the user's words; the model is never asked
         msg = "Only SELECT statements are allowed."
@@ -107,7 +121,11 @@ def run_sql_agent(question: str, max_attempts: int = 2) -> SQLResult:
         start = time.monotonic()
         raw_sql = None
         try:
-            raw_sql = structured(SQLDraft).invoke(_prompt(question, prev_sql, error)).sql
+            # with_structured_output().invoke() is typed dict | BaseModel (dict when the model's native
+            # JSON mode is used); narrow explicitly, same pattern as route() in chat_agent.py.
+            draft = structured(SQLDraft).invoke(_prompt(question, prev_sql, error))
+            draft = draft if isinstance(draft, SQLDraft) else SQLDraft.model_validate(draft)
+            raw_sql = draft.sql
             sql = validate_sql(raw_sql, max_rows=settings.sql_max_rows)
             result.sql = sql
             cols, rows = _execute(sql)

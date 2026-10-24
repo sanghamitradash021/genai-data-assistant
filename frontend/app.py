@@ -1,4 +1,5 @@
 """Streamlit test UI for the GenAI Data Assistant API."""
+import json
 import os
 
 import pandas as pd
@@ -6,14 +7,18 @@ import requests
 import streamlit as st
 
 API = os.getenv("API_URL", "http://localhost:8000")
+API_KEY = os.getenv("API_KEY")  # must match the backend's API_KEY; unset on both sides = no auth
 ICON = {"document": "📄 documents", "database": "🗄️ database", "both": "📄+🗄️ documents + database"}
 
 st.set_page_config(page_title="GenAI Data Assistant", page_icon="🤖", layout="wide")
 
 
 def call(method, path, **kw):
+    headers = kw.pop("headers", {})
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
     try:
-        r = requests.request(method, f"{API}{path}", timeout=kw.pop("timeout", 30), **kw)
+        r = requests.request(method, f"{API}{path}", timeout=kw.pop("timeout", 30), headers=headers, **kw)
         return r
     except requests.RequestException as e:
         st.error(f"API unreachable: {e}")
@@ -25,6 +30,29 @@ def detail(r):
         return r.json().get("detail", r.text)
     except ValueError:
         return r.text
+
+
+def stream_chat(body, result: dict):
+    """Yields answer text as it arrives from POST /chat/stream; fills `result` with the final
+    {"type": "done", ...} payload (same fields as POST /chat's JSON) once the stream closes."""
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    try:
+        with requests.post(f"{API}/chat/stream", json=body, headers=headers, stream=True, timeout=600) as r:
+            if r.status_code != 200:
+                result["error"] = f"{r.status_code}: {detail(r)}"
+                return
+            for line in r.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = json.loads(line[len("data: "):])
+                if payload["type"] == "token":
+                    yield payload["text"]
+                elif payload["type"] == "error":
+                    result["error"] = payload["detail"]
+                elif payload["type"] == "done":
+                    result.update(payload)
+    except requests.RequestException as e:
+        result["error"] = f"API unreachable: {e}"
 
 
 def render_extras(m):
@@ -118,21 +146,20 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
     with st.chat_message("assistant"):
+        body = {"message": prompt}
+        if "session_id" in st.session_state:
+            body["session_id"] = st.session_state["session_id"]
+        result: dict = {}
         with st.spinner("Thinking… (local model, can take up to a minute)"):
-            body = {"message": prompt}
-            if "session_id" in st.session_state:
-                body["session_id"] = st.session_state["session_id"]
-            r = call("POST", "/chat", json=body, timeout=600)
-        if r is None:
-            pass
-        elif not r.ok:
-            st.error(f"{r.status_code}: {detail(r)}")
-        else:
-            data = r.json()
-            st.session_state["session_id"] = data["session_id"]
-            m = {"role": "assistant", "content": data["answer"], "route": data["route"],
-                 "standalone": data["standalone_question"], "question": prompt,
-                 "sources": data["sources"], "sql": data["sql"]}
+            st.write_stream(stream_chat(body, result))
+        if result.get("error"):
+            st.error(result["error"])
+        elif result:
+            st.session_state["session_id"] = result["session_id"]
+            m = {"role": "assistant", "content": result["answer"], "route": result["route"],
+                 "standalone": result["standalone_question"], "question": prompt,
+                 "sources": result["sources"], "sql": result["sql"]}
             messages.append(m)
-            st.markdown(m["content"])
             render_extras(m)
+        else:
+            st.error("No response from the assistant.")

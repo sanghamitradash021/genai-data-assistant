@@ -16,7 +16,7 @@ Security-sensitive input is never rewritten.
 """
 import logging
 import re
-from typing import Callable
+from collections.abc import Callable
 
 from app.prompts.condense_prompt import CONDENSE_SYSTEM as _SYSTEM
 from app.utils.security import is_sensitive_request
@@ -74,9 +74,8 @@ def needs_rewrite(question: str) -> bool:
         return True  # nothing of its own to search for: "What is the time limit?", "How many are allowed?"
     if _PRONOUN.search(question) and n <= 2:
         return True  # "What do they eat?"
-    if (_DEMONSTRATIVE.search(question) or _OPENER.search(question)) and n <= 1:
-        return True  # "What causes this?", "And for contractors?"
-    return False
+    # "What causes this?", "And for contractors?"
+    return bool((_DEMONSTRATIVE.search(question) or _OPENER.search(question)) and n <= 1)
 
 
 def _stem(w: str) -> str:
@@ -102,10 +101,12 @@ def introduces_only_known_terms(original: str, rewritten: str, history: list[dic
 
 
 def _last_user_question(history: list[dict]) -> str | None:
+    """None if history has no prior user turn (e.g. the very first message of a session)."""
     return next((m["content"] for m in reversed(history) if m["role"] == "user"), None)
 
 
 def fallback_rewrite(question: str, history: list[dict]) -> str:
+    """Deterministic rewrite used when the LLM rewrite is rejected or fails; never invents new content."""
     prev = _last_user_question(history)
     if not prev:
         return question
@@ -119,6 +120,7 @@ def uses_history(question: str, history: list[dict]) -> bool:
 
 
 def _clean(question: str) -> str:
+    """Strip a leading conversational filler ("I mean...", "sorry,...") and re-capitalize what's left."""
     cleaned = _CLARIFIER.sub("", question, count=1).strip()
     return cleaned[:1].upper() + cleaned[1:] if cleaned != question.strip() else question
 

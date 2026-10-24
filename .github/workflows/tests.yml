@@ -16,4 +16,6 @@ jobs:
 
       - run: pip install -r requirements-dev.txt
 
+      - run: ruff check .
+
       - run: pytest --cov=app --cov-report=term-missing

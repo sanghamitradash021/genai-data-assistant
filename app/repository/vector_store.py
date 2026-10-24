@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from typing import cast
 
 from qdrant_client import QdrantClient, models
 
@@ -37,7 +37,9 @@ class VectorStore:
         specs = {
             "doc_id": models.PayloadSchemaType.KEYWORD,
             "filename": models.PayloadSchemaType.KEYWORD,
-            "heading": models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True),
+            "heading": models.TextIndexParams(
+                type=models.TextIndexType.TEXT, tokenizer=models.TokenizerType.WORD, lowercase=True
+            ),
         }
         for field, schema in specs.items():  # idempotent; also upgrades collections created by older versions
             try:
@@ -49,6 +51,7 @@ class VectorStore:
         self._indexes_ready = True
 
     def _ensure_collection(self, dim: int) -> None:
+        """Create the collection sized to the embedding model's dim on first use; a no-op after that."""
         if self._client.collection_exists(self._collection):
             self._ensure_indexes()
             return
@@ -59,6 +62,7 @@ class VectorStore:
         self._ensure_indexes()
 
     def ping(self) -> None:
+        """Raises if Qdrant is unreachable; used by the GET /health check."""
         self._client.get_collections()
 
     @staticmethod
@@ -69,6 +73,7 @@ class VectorStore:
 
     # -- ingest -----------------------------------------------------------
     def ingest_file(self, path: Path) -> DocumentInfo:
+        """Load, chunk, embed and upsert path's content, replacing any existing chunks for the same doc_id."""
         sections = load_sections(path)
         chunks = chunk_sections(sections, path.suffix.lower())
         if not chunks:
@@ -101,7 +106,7 @@ class VectorStore:
                     "ingested_at": ingested_at,
                 },
             )
-            for c, v in zip(chunks, vectors)
+            for c, v in zip(chunks, vectors, strict=True)
         ]
         self._client.upsert(self._collection, points=points, wait=True)
         self._filenames_cache = None
@@ -122,7 +127,10 @@ class VectorStore:
 
     @staticmethod
     def _to_hit(p) -> Hit:
+        """Qdrant scored point -> Hit, reading fields back out of the payload set at ingest time."""
         pl = p.payload
+        if pl is None:  # every point this code ingests always carries a full payload; None means corrupt data
+            raise ValueError(f"Point {p.id} has no payload")
         return Hit(
             doc_id=pl["doc_id"],
             filename=pl["filename"],
@@ -165,9 +173,18 @@ class VectorStore:
             records, _ = self._client.scroll(self._collection, scroll_filter=flt, limit=n, with_payload=True,
                                              with_vectors=True)
             for r in records:
-                if str(r.id) not in points and r.vector:
-                    points[str(r.id)] = SimpleNamespace(
-                        id=r.id, payload=r.payload, score=retrieval.cosine(vector, r.vector))
+                if str(r.id) not in points and isinstance(r.vector, list) and r.vector:
+                    # r.vector's type also covers named/multi-vector and sparse-vector collections; this
+                    # collection is always created with a single unnamed VectorParams (_ensure_collection),
+                    # so it is always a plain list[float] here. The isinstance check above rules out the
+                    # dict (named-vector) case; cast() records the remaining list[float] vs list[list[float]]
+                    # guarantee, which only holds because of that single-vector schema.
+                    flat_vector = cast(list[float], r.vector)
+                    # A real ScoredPoint, not a stand-in: scroll() doesn't return a score, so it's computed
+                    # here from the already-fetched query vector; `version` is unused downstream (_to_hit
+                    # only reads id/payload/score) but required by the model, so 0 is a safe placeholder.
+                    points[str(r.id)] = models.ScoredPoint(
+                        id=r.id, version=0, payload=r.payload, score=retrieval.cosine(vector, flat_vector))
 
         ranked = retrieval.rank_candidates(query, [self._to_hit(p) for p in points.values()], mentioned)
         broad = retrieval.is_broad(query)
@@ -175,6 +192,7 @@ class VectorStore:
 
     # -- list / delete ----------------------------------------------------
     def list_documents(self) -> list[DocumentInfo]:
+        """Page through the whole collection, aggregating per-chunk payloads into one entry per doc_id."""
         if not self._client.collection_exists(self._collection):
             return []
         docs: dict[str, DocumentInfo] = {}
@@ -189,6 +207,9 @@ class VectorStore:
             )
             for p in points:
                 pl = p.payload
+                if pl is None:  # same guarantee as _to_hit; skip rather than fail the whole listing
+                    log.warning("Point %s has no payload; skipping", p.id)
+                    continue
                 info = docs.setdefault(
                     pl["doc_id"],
                     DocumentInfo(
@@ -218,11 +239,16 @@ class VectorStore:
                 self._collection, limit=500, offset=offset,
                 with_payload=["doc_id", "chunker_version"], with_vectors=False,
             )
-            stale |= {p.payload["doc_id"] for p in points if p.payload.get("chunker_version") != CHUNKER_VERSION}
+            stale |= {
+                p.payload["doc_id"]
+                for p in points
+                if p.payload is not None and p.payload.get("chunker_version") != CHUNKER_VERSION
+            }
             if offset is None:
                 return stale
 
     def delete_vectors(self, doc_id: str) -> None:
+        """Remove every chunk belonging to doc_id and invalidate the filename cache that search() reads."""
         self._filenames_cache = None
         if self._client.collection_exists(self._collection):
             self._client.delete(

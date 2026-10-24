@@ -25,6 +25,7 @@ def docs_dir() -> Path:
 
 
 def ingest_directory(store, force: bool = False) -> IngestResponse:
+    """Index every supported, not-yet-indexed file under docs_dir(); force=True re-embeds everything."""
     indexed = {d.id for d in store.list_documents()} - store.stale_doc_ids()  # old chunker -> re-embed
     out = IngestResponse(ingested=[])
     for path in sorted(docs_dir().iterdir()):
@@ -51,6 +52,7 @@ def _auto_ingest() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    """FastAPI startup hook: kicks off auto-ingest in a background thread so it never blocks readiness."""
     if settings.auto_ingest:
         threading.Thread(target=_auto_ingest, daemon=True).start()
     yield

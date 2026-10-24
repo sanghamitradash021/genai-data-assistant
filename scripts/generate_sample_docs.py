@@ -4,7 +4,7 @@ from pathlib import Path
 from docx import Document
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer
 
 OUT = Path(__file__).resolve().parent.parent / "data" / "documents"
 
@@ -29,10 +29,10 @@ table.rows[0].cells[0].text, table.rows[0].cells[1].text = "Class", "Retention"
 for cls, ret in [("Internal", "3 years"), ("Confidential", "7 years"), ("Restricted", "10 years")]:
     row = table.add_row().cells
     row[0].text, row[1].text = cls, ret
-doc.save(OUT / "security_policy.docx")
+doc.save(str(OUT / "security_policy.docx"))
 
 styles = getSampleStyleSheet()
-story = [Paragraph("Acme Corp Product Warranty and Support", styles["Title"])]
+story: list[Flowable] = [Paragraph("Acme Corp Product Warranty and Support", styles["Title"])]
 sections = [
     ("Warranty coverage", "All Acme computers carry a 24-month limited warranty covering manufacturing defects. "
      "Accessories, audio devices and wearables carry a 12-month warranty. Accidental damage is not covered unless the customer "

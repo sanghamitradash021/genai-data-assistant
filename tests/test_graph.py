@@ -1,6 +1,6 @@
 import pytest
 
-from app.agents.chat_agent import GraphDeps, build_graph, heuristic_route
+from app.agents.chat_agent import GraphDeps, build_graph, heuristic_route, initial_state
 from app.models.retrieval import Hit
 from app.models.routing import RouteDecision
 from app.models.sql import SQLResult
@@ -33,21 +33,21 @@ def make(route, calls, fail_router=False):
 )
 def test_routing(route, expected, answer):
     calls = []
-    out = make(route, calls).invoke({"question": "q", "history": []})
+    out = make(route, calls).invoke(initial_state("q", []))
     assert set(calls) == expected and out["answer"] == answer
     assert "condense" not in calls  # no history -> no rewrite
 
 
 def test_followup_is_condensed():
     calls = []
-    out = make("document", calls).invoke({"question": "and sick leave?", "history": [{"role": "user", "content": "x"}]})
+    out = make("document", calls).invoke(initial_state("and sick leave?", [{"role": "user", "content": "x"}]))
     assert "condense" in calls and out["standalone"] == "standalone(and sick leave?)"
 
 
 def test_router_failure_falls_back_to_heuristic():
     calls = []
     out = make("document", calls, fail_router=True).invoke(
-        {"question": "Which are the top 5 customers by revenue?", "history": []}
+        initial_state("Which are the top 5 customers by revenue?", [])
     )
     assert out["route"] == "database" and calls == ["sql"]
 
@@ -69,5 +69,6 @@ def test_conversation_store_is_bounded():
     for i in range(5):
         s.add_turn("a", f"q{i}", "a")
     assert len(s.get("a")) == 4
-    s.add_turn("b", "q", "a"); s.add_turn("c", "q", "a")
+    s.add_turn("b", "q", "a")
+    s.add_turn("c", "q", "a")
     assert s.get("a") == []  # LRU evicted

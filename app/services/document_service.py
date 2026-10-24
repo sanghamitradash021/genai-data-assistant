@@ -42,6 +42,7 @@ def doc_id_for(filename: str) -> str:
 
 
 def load_sections(path: Path) -> list[Section]:
+    """Extract raw text sections by format: one per PDF page, one for DOCX (pre-converted to Markdown)."""
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {ext or '(none)'}")
