@@ -18,6 +18,7 @@ def live():
 
 @router.get("/health", response_model=HealthResponse)
 def health(store=Depends(get_store)):
+    """Probes Qdrant, Ollama and Postgres independently; 200 only if all three are reachable, else 503."""
     checks = {}
 
     def probe(name, fn):

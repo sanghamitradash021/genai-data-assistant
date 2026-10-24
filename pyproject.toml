@@ -1,0 +1,30 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear (common footguns)
+    "C4",  # comprehensions
+    "SIM", # simplify
+]
+ignore = [
+    "E501",  # line length: the formatter wraps what it safely can; long SQL/prompt literals and log
+             # format strings are clearer unwrapped and are deliberately left alone here.
+    "B008",  # FastAPI's dependency-injection idiom is exactly Depends(...)/File(...)/Query(...) as a
+             # default argument; that is the framework's documented pattern, not a bug.
+    "SIM905", # word lists as "a b c".split() read as prose; a one-line list literal of 50+ quoted
+              # strings would be far less readable, so this project's existing style is kept.
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pylint.main]
+# Without this, pylint statically sees a pydantic Field(...) as its own FieldInfo class, not the
+# resolved runtime type (list, dict, ...), and reports a false "no-member" on every method call on it.
+load-plugins = ["pylint_pydantic"]

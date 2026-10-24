@@ -29,6 +29,28 @@ curl -s localhost:8000/chat -H 'content-type: application/json' \
 
 ## Architecture
 
+
+
+```mermaid
+flowchart TD
+    User --> API[FastAPI]
+    API --> Router{Router}
+    Router -->|document| RAG[RAG Agent]
+    Router -->|database| SQL[SQL Agent]
+    Router -->|both| RAG
+    Router -->|both| SQL
+    RAG --> Qdrant[(Qdrant)]
+    SQL --> Postgres[(PostgreSQL)]
+    RAG --> Answer[Answer]
+    SQL --> Answer
+    Answer --> API
+```
+
+A question hits FastAPI, a LangGraph router decides *document*, *database*, or *both*. The RAG agent searches Qdrant, the SQL agent queries PostgreSQL, and either result feeds one final answer. Every LLM step (routing, SQL generation, answering) runs on the same local Ollama model — nothing leaves the machine.
+
+<details>
+<summary>Full detailed flow (click to expand)</summary>
+
 ```mermaid
 flowchart TD
     U[Client] -->|POST /chat| API[FastAPI]
@@ -50,6 +72,8 @@ flowchart TD
 ```
 
 Full flow, from `docker compose up` through startup, ingestion and every chat-request path (document / database / combined), with the responsible file named at each step:
+
+</details>
 
 ![Local GenAI Data Assistant – complete flow diagram](docs/images/architecture-flow.png)
 
@@ -108,11 +132,23 @@ SELECT asked_at, status, question, generated_sql FROM query_log ORDER BY id DESC
 ```
 
 ### Security & error handling
-- Untrusted-data framing: document and SQL text is delimited, delimiter tags are stripped from documents, system prompt says never to follow instructions found in context; injection-looking user input is logged.
-- Input limits: message ≤ 2000 chars, control chars stripped, upload ≤ 10 MB, extension allowlist, filename sanitised (no path traversal), session id pattern-checked.
+
+**SQL: three independent layers, any one of which alone would block an unsafe query**
+1. `sqlglot` AST validator (`app/tools/sql_validator.py`) — fails closed: anything not a plain `SELECT`/`UNION` over the 5 allowed tables is rejected before it ever reaches the database.
+2. Postgres role `assistant_ro` (`db/03_roles.sh`) — `SELECT`-only grant on those same 5 tables, `default_transaction_read_only = on`, nothing else visible (no `query_log`, no other schemas).
+3. Per-transaction `READ ONLY` + `SET LOCAL statement_timeout` (`app/agents/sql_agent.py`) — caps worst-case query time regardless of what the first two layers let through.
+
+Every attempt (accepted / rejected / errored) is written to `query_log` for audit, independent of whether the query ran.
+
+**Everything else**
+- Untrusted-data framing: document and SQL text is delimited, delimiter tags are stripped from documents, system prompt says never to follow instructions found in context; injection-looking user input is logged, never executed.
+- Prompt-injection / secret-extraction / destructive-request detection (`app/utils/security.py`) gates both the SQL path (checked before the model sees the question) and the answer path (refused outright).
+- Input limits: message ≤ 2000 chars, control chars stripped, upload ≤ 10 MB, extension allowlist, filename sanitised (no path traversal on upload or delete), session id pattern-checked.
 - Generic error messages to clients (details only in logs); LLM outage → `503`, SQL/retrieval failures degrade to an answer that says the data was unavailable.
 - Ports are bound to `127.0.0.1`; API container runs as non-root; Qdrant telemetry disabled.
-- Note: conversation memory is in-process (bounded LRU) – it resets on restart and is not shared across replicas.
+- No deserialization of untrusted data anywhere (no pickle) — conversation memory is a plain in-process bounded LRU, not persisted to disk.
+
+**Known limitation:** this is pattern/keyword-based injection detection, appropriate for a local demo — not a guarantee against adaptive prompt injection. No auth on the API itself (see *Known limits* below).
 
 ## API
 See [docs/API.md](docs/API.md) or the live Swagger UI at `/docs`.
@@ -133,9 +169,16 @@ See [docs/API.md](docs/API.md) or the live Swagger UI at `/docs`.
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest
+pytest                                  # 299 tests
+pytest --cov=app --cov-report=term-missing   # with coverage (~90%)
 ```
-Covers the SQL validator (injection/DDL/DML/catalog access), loaders/chunking, LangGraph routing & fallback with injected fakes, conversation store, and all API endpoints (fake graph/store). No Ollama/Docker needed.
+Covers the SQL validator (injection/DDL/DML/catalog access), loaders/chunking, LangGraph routing & fallback with injected fakes, conversation store, and all API endpoints (fake graph/store). No Ollama/Docker needed. Runs automatically on every push/PR via [GitHub Actions](.github/workflows/tests.yml).
+
+**Optional integration test** (`tests/test_integration_ollama.py`): exercises the real local model against the seeded schema to confirm it actually produces valid SQL, not just that the validator rejects bad SQL in isolation. Skipped by default; requires live services:
+```bash
+docker compose up -d
+RUN_INTEGRATION=1 pytest tests/test_integration_ollama.py
+```
 
 ## Project layout
 Layered by responsibility (routes -> agents/services -> repository/tools -> llms), one concern per package:
@@ -165,3 +208,4 @@ docs/API.md    endpoint reference
 ## Known limits
 - 8B local models occasionally write imperfect SQL; the retry loop and the shown SQL/rows make this visible. Larger models via `CHAT_MODEL` improve it.
 - No auth on the API (local demo). Put it behind a reverse proxy with auth before exposing beyond localhost.
+- Conversation history (`ConversationStore`) is a bounded in-process LRU, not shared storage. This is correct only because the API runs as a single `uvicorn` worker/process (as shipped, no `--workers`); scaling to multiple workers or replicas would break session affinity and needs the history moved to shared storage (e.g. Redis or Postgres).

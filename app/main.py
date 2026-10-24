@@ -5,12 +5,15 @@ Request handling itself lives in app/health.py and app/routes/*; app/starter.py 
 import logging
 
 from fastapi import FastAPI
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app import health
 from app.config.settings import settings  # noqa: F401  (re-exported: tests mutate app.main.settings)
 from app.routes import chat_routes, document_routes
 from app.routes.dependencies import get_graph, get_store  # noqa: F401  (re-exported for dependency_overrides)
 from app.starter import lifespan
+from app.utils.rate_limit import limiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
@@ -21,6 +24,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Per-IP rate limiting on the expensive routes (LLM/embedding/DB calls); see chat_routes.py / document_routes.py.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(health.router)
 app.include_router(chat_routes.router)

@@ -15,6 +15,7 @@ class ConversationStore:
             return list(self._data.get(session_id, []))
 
     def add_turn(self, session_id: str, question: str, answer: str) -> None:
+        """Append a turn, trim to the most recent max_turns, and evict the oldest session if over capacity."""
         with self._lock:
             msgs = self._data.pop(session_id, [])
             msgs += [

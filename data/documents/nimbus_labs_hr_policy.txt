@@ -1,0 +1,42 @@
+NIMBUS LABS - EMPLOYEE HANDBOOK: LEAVE, REMOTE WORK AND BENEFITS
+Version 4.2 | Effective Date: 1 April 2026 | Owner: People Operations
+
+1. ABOUT THIS DOCUMENT
+This handbook applies to all full-time employees of Nimbus Labs Pvt. Ltd., headquartered in Bhubaneswar, India, with satellite offices in Pune and Singapore. Contractors and interns are covered only by Section 7.
+
+2. WORKING HOURS
+Core hours are 11:00 AM to 4:00 PM IST. Employees must be reachable during core hours. Outside core hours, employees may schedule their work flexibly, provided they complete 8 working hours per day. Lunch break is 45 minutes and is not counted as working time.
+
+3. LEAVE POLICY
+3.1 Annual Leave: Every employee receives 24 days of paid annual leave per calendar year. Up to 8 unused days can be carried forward to the next year. Any balance above 8 days lapses on 31 December.
+3.2 Sick Leave: 12 days per year. A medical certificate is required if sick leave exceeds 3 consecutive days.
+3.3 Casual Leave: 6 days per year. Casual leave cannot be combined with annual leave and cannot be carried forward.
+3.4 Maternity Leave: 26 weeks of paid leave for the first two children, and 12 weeks for the third child onward.
+3.5 Paternity Leave: 10 working days, which must be taken within 6 months of the child's birth.
+3.6 Bereavement Leave: 5 days for the death of an immediate family member (spouse, parent, child, sibling) and 2 days for extended family.
+3.7 Sabbatical: Employees who have completed 5 continuous years of service may apply for an unpaid sabbatical of up to 3 months. Applications must be submitted at least 90 days in advance and require approval from the department head and the HR Director, Meenakshi Rao.
+
+4. REMOTE AND HYBRID WORK
+4.1 Nimbus Labs follows a hybrid model. Employees are expected to be in the office on Tuesdays and Thursdays. The remaining days can be worked remotely.
+4.2 Employees may work fully remotely for up to 30 days per year from a location other than their home city, called "Work From Anywhere" days. These require manager approval at least 14 days in advance.
+4.3 Remote work from outside India is not allowed for more than 15 consecutive days due to tax and compliance reasons.
+4.4 A one-time home office setup allowance of INR 25,000 is given to every new employee. A monthly internet reimbursement of INR 1,000 is provided to all remote and hybrid employees.
+
+5. BENEFITS
+5.1 Health Insurance: Group health cover of INR 5,00,000 per employee, extendable to spouse and up to two children at no extra cost. Parents can be added at a cost of INR 6,500 per parent per year.
+5.2 Learning Budget: Each employee gets INR 40,000 per year for courses, books and conferences. Unused budget does not carry forward.
+5.3 Wellness Allowance: INR 2,500 per month, reimbursable against gym memberships, yoga classes or mental wellness apps.
+5.4 Referral Bonus: INR 50,000 for a successful referral who completes 6 months at the company. The bonus is INR 75,000 for referrals into senior engineering roles.
+5.5 Provident Fund: The company contributes 12% of basic salary to the Employee Provident Fund.
+
+6. PERFORMANCE REVIEWS
+Performance reviews are held twice a year, in April and October. Ratings use a 5-point scale: 1 (Needs Improvement), 2 (Partially Meets), 3 (Meets), 4 (Exceeds) and 5 (Outstanding). Employees rated 4 or above in two consecutive cycles become eligible for promotion consideration. Salary revisions take effect on 1 June each year.
+
+7. CONTRACTORS AND INTERNS
+Contractors are not eligible for paid leave, health insurance or the learning budget. Interns receive a monthly stipend, 1 day of paid leave per month, and access to the learning platform but not the learning budget.
+
+8. RESIGNATION AND NOTICE PERIOD
+The standard notice period is 60 days for all employees below the Lead level and 90 days for Lead level and above. During the notice period, employees cannot take more than 5 days of leave without written approval. Final settlement is completed within 45 days of the last working day.
+
+9. CONTACT
+Questions about this policy can be sent to people-ops@nimbuslabs.example or raised on the #ask-people-ops Slack channel.

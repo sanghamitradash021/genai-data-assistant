@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from qdrant_client import QdrantClient
 
-from app.repository import vector_store as vectorstore
-from app.services import retrieval_service as retrieval
 from app.config.settings import settings
 from app.models.retrieval import Hit
+from app.repository import vector_store as vectorstore
+from app.services import retrieval_service as retrieval
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -107,8 +107,8 @@ def test_named_document_wins_and_others_are_only_a_fallback():
 
 def test_final_score_uses_configurable_weights():
     h = hit(text="orm", sem=0.6)
-    lo = replace(settings, semantic_weight=1.0, keyword_weight=0.0)
-    hi = replace(settings, semantic_weight=0.0, keyword_weight=1.0)
+    lo = settings.model_copy(update={"semantic_weight": 1.0, "keyword_weight": 0.0})
+    hi = settings.model_copy(update={"semantic_weight": 0.0, "keyword_weight": 1.0})
     assert retrieval.rank_candidates("orm", [h], cfg=lo)[0].score == 0.6
     assert retrieval.rank_candidates("orm", [h], cfg=hi)[0].score == 1.0
 
@@ -137,7 +137,7 @@ def test_query_expansion_maps_vague_concepts_to_document_vocabulary():
 
 
 def test_debug_logging_lists_candidates_with_scores(caplog):
-    cfg = replace(settings, rag_debug=True)
+    cfg = settings.model_copy(update={"rag_debug": True})
     with caplog.at_level("INFO", logger="app.services.retrieval_service"):
         retrieval.rank_candidates("which ORM is used?", [hit("c.md", "ORM Prisma", "Database", 0.7)], cfg=cfg)
     text = caplog.text
@@ -311,15 +311,16 @@ def test_stale_documents_are_detected_for_reindexing(store):
 # ---------------------------------------------------------------- full graph on the real document ---------
 @pytest.fixture
 def pipeline(store):
-    from app.agents.condense import condense_question
     from app.agents.chat_agent import GraphDeps, _format_context, build_graph, initial_state
+    from app.agents.condense import condense_question
+    from app.models.sql import SQLResult
 
     sql_calls = []
     deps = GraphDeps(
         condense=lambda q, h: condense_question(q, h, lambda s, u: "unused"),
         route=lambda q: (_ for _ in ()).throw(RuntimeError("LLM router unavailable")),
         retrieve=store.search,
-        run_sql=lambda q: sql_calls.append(q),
+        run_sql=lambda q: (sql_calls.append(q), SQLResult(q))[1],
         answer=lambda q, hits, sql: _format_context(hits, sql),  # what the LLM would be given
     )
     graph = build_graph(deps)

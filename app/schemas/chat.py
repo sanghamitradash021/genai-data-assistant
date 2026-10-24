@@ -3,9 +3,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.config.settings import settings
+
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(min_length=1, max_length=settings.max_message_chars)
     session_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
 
 
