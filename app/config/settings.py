@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "documents"
 
-    # Generated SQL runs as the read-only role; only the audit log uses the admin role.
+    
     database_url_ro: str = "postgresql://assistant_ro:rainbow@localhost:5432/shop"
     database_url_rw: str = "postgresql://shop_admin:development@localhost:5432/shop"
 
