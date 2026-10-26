@@ -3,8 +3,10 @@
 Request handling itself lives in app/health.py and app/routes/*; app/starter.py owns startup/auto-ingest.
 """
 import logging
+from typing import cast
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -27,7 +29,16 @@ app = FastAPI(
 
 # Per-IP rate limiting on the expensive routes (LLM/embedding/DB calls); see chat_routes.py / document_routes.py.
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+def _rate_limit_handler(request: Request, exc: Exception) -> Response:
+    """add_exception_handler() requires an (Request, Exception) -> Response handler; slowapi's own
+    handler is typed narrower as (Request, RateLimitExceeded) -> Response. This only ever runs for a
+    RateLimitExceeded (that's the type we register it against below), so the cast is safe."""
+    return _rate_limit_exceeded_handler(request, cast(RateLimitExceeded, exc))
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 app.include_router(health.router)
 app.include_router(chat_routes.router)
