@@ -3,6 +3,7 @@
 Kept in one place (and re-exported from app.main for convenience/tests) so `app.main.app.dependency_overrides`
 always targets the exact same callables the routers depend on.
 """
+import hmac
 from functools import lru_cache
 
 from fastapi import Header, HTTPException
@@ -33,5 +34,6 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     """
     if not settings.api_key:
         return
-    if x_api_key != settings.api_key:
+    # compare_digest (not !=): a short-circuiting != leaks the key's length/prefix via response timing.
+    if x_api_key is None or not hmac.compare_digest(x_api_key, settings.api_key):
         raise HTTPException(401, "Missing or invalid API key.")
