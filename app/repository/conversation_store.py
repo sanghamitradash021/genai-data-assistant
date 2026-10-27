@@ -1,4 +1,15 @@
-"""In-process conversation memory: bounded LRU of sessions, each a bounded list of turns."""
+"""In-process conversation memory: bounded LRU of sessions, each a bounded list of turns.
+
+Scope, by design, for this single-process demo (see README "Known limits"):
+  - Lost on restart, and not shared across workers/replicas - correct only because the API runs as a
+    single `uvicorn` worker (no `--workers`, no horizontal scaling).
+  - Two concurrent requests for the *same* session_id can interleave: each reads history before the
+    other's answer is added, and turns land in completion order, not request order. The lock below only
+    protects the dict itself from corruption, not this read-then-later-write race across requests. A
+    real multi-request-per-session client would need per-session serialization or a shared, ordered
+    store (e.g. Postgres, or the LangGraph checkpointer); out of scope for the assignment's follow-up
+    use case (one request in flight per session at a time).
+"""
 import threading
 from collections import OrderedDict
 

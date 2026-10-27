@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app.agents.chat_agent import GraphDeps, build_graph, heuristic_route, initial_state
@@ -7,18 +9,25 @@ from app.models.sql import SQLResult
 from app.repository.conversation_store import ConversationStore
 
 
+def run(graph, question, history=None, session_id=None):
+    return asyncio.run(graph.ainvoke(initial_state(question, history or [], session_id)))
+
+
 def make(route, calls, fail_router=False):
     def do_route(q):
         if fail_router:
             raise RuntimeError("llm down")
         return RouteDecision(route=route, doc_question="doc?", db_question="db?")
 
+    async def answer(q, hits, sql, config=None):
+        return f"hits={hits is not None} sql={sql is not None}"
+
     deps = GraphDeps(
         condense=lambda q, h: (calls.append("condense"), f"standalone({q})")[1],
         route=do_route,
         retrieve=lambda q: (calls.append("rag"), [Hit("id", "f.md", None, 0, 0.9, "text")])[1],
-        run_sql=lambda q: (calls.append("sql"), SQLResult(q, sql="SELECT 1", columns=["a"], rows=[[1]]))[1],
-        answer=lambda q, hits, sql: f"hits={hits is not None} sql={sql is not None}",
+        run_sql=lambda q, sid=None: (calls.append("sql"), SQLResult(q, sql="SELECT 1", columns=["a"], rows=[[1]]))[1],
+        answer=answer,
     )
     return build_graph(deps)
 
@@ -33,23 +42,38 @@ def make(route, calls, fail_router=False):
 )
 def test_routing(route, expected, answer):
     calls = []
-    out = make(route, calls).invoke(initial_state("q", []))
+    out = run(make(route, calls), "q")
     assert set(calls) == expected and out["answer"] == answer
     assert "condense" not in calls  # no history -> no rewrite
 
 
 def test_followup_is_condensed():
     calls = []
-    out = make("document", calls).invoke(initial_state("and sick leave?", [{"role": "user", "content": "x"}]))
+    out = run(make("document", calls), "and sick leave?", [{"role": "user", "content": "x"}])
     assert "condense" in calls and out["standalone"] == "standalone(and sick leave?)"
 
 
 def test_router_failure_falls_back_to_heuristic():
     calls = []
-    out = make("document", calls, fail_router=True).invoke(
-        initial_state("Which are the top 5 customers by revenue?", [])
-    )
+    out = run(make("document", calls, fail_router=True), "Which are the top 5 customers by revenue?")
     assert out["route"] == "database" and calls == ["sql"]
+
+
+def test_session_id_reaches_the_sql_node_for_audit_logging():
+    seen = []
+
+    async def answer(q, h, s, config=None):
+        return "ok"
+
+    deps = GraphDeps(
+        condense=lambda q, h: q,
+        route=lambda q: RouteDecision(route="database", db_question=q),
+        retrieve=lambda q: [],
+        run_sql=lambda q, sid=None: seen.append(sid) or SQLResult(q),
+        answer=answer,
+    )
+    run(build_graph(deps), "how many customers are there?", session_id="sess-42")
+    assert seen == ["sess-42"]
 
 
 @pytest.mark.parametrize(

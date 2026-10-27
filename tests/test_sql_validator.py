@@ -59,3 +59,43 @@ def test_rejected(sql):
 def test_comment_smuggling_is_stripped():
     out = v("SELECT id FROM orders -- ; DROP TABLE orders")
     assert "DROP" not in out.upper()
+
+
+# --- CTE-name shadowing must never let a real table reference slip through ----------------------------
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A sibling branch's real system-table reference must still be rejected even though a CTE
+        # elsewhere in the statement happens to reuse that exact name for something harmless.
+        "SELECT * FROM pg_shadow UNION ALL (WITH pg_shadow AS (SELECT 1 AS x) SELECT x FROM pg_shadow)",
+        "SELECT * FROM information_schema.tables "
+        "UNION ALL (WITH information_schema AS (SELECT 1 AS x) SELECT x FROM information_schema)",
+        # The CTE name itself is disallowed outright, independent of what it actually selects.
+        "WITH pg_shadow AS (SELECT 1 AS x) SELECT x FROM pg_shadow",
+        "WITH customers AS (SELECT 1 AS id) SELECT id FROM customers",  # shadows an allowed table too
+    ],
+)
+def test_cte_cannot_shadow_an_allowed_or_system_table_name(sql):
+    with pytest.raises(SQLValidationError):
+        v(sql)
+
+
+def test_genuinely_scoped_cte_still_allowed():
+    # A CTE with an ordinary, non-shadowing name is unaffected by the scope-based table check.
+    sql = "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent"
+    assert "LIMIT" in v(sql)
+
+
+# --- LIMIT is clamped, not just added when absent ------------------------------------------------------
+def test_oversized_limit_is_clamped_to_max_rows():
+    out = v("SELECT * FROM customers LIMIT 1000000")
+    assert "LIMIT 100" in out and "1000000" not in out
+
+
+def test_non_numeric_limit_is_replaced():
+    out = v("SELECT * FROM customers LIMIT ALL")
+    assert "LIMIT 100" in out
+
+
+def test_limit_under_cap_is_left_alone():
+    assert "LIMIT 5" in v("SELECT * FROM customers LIMIT 5")

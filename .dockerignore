@@ -1,6 +1,12 @@
 .git
 .venv
+.venv-test
 __pycache__
 *.pyc
 tests
 .claude
+.env
+.coverage
+digest.txt
+.pytest_cache
+.ruff_cache

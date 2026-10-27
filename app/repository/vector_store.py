@@ -10,8 +10,8 @@ from qdrant_client import QdrantClient, models
 from app.config.settings import settings
 from app.llms.ollama_client import embeddings
 from app.models.retrieval import Hit
+from app.repository import retrieval
 from app.schemas.documents import DocumentInfo
-from app.services import retrieval_service as retrieval
 from app.services.document_service import CHUNKER_VERSION, chunk_sections, doc_id_for, load_sections
 
 log = logging.getLogger(__name__)

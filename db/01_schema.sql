@@ -39,11 +39,17 @@ CREATE TABLE refunds (
     refunded_at  DATE NOT NULL
 );
 
--- Audit log of every NL->SQL attempt. Written by the API's admin role only;
--- the read-only role used to execute generated SQL cannot even see it.
+-- Audit log of every NL->SQL attempt. Written by assistant_rw (INSERT/DELETE on this table only, see
+-- db/03_roles.sh); the read-only role used to execute generated SQL cannot even see it.
+--
+-- `question` is the user's raw text, not redacted - it can contain PII the user typed. Kept bounded by a
+-- retention prune (app/agents/sql_agent.py:prune_query_log(), QUERY_LOG_RETENTION_DAYS, default 30 days),
+-- not kept forever by default. `session_id` lets an operator correlate rows with a /chat session (and,
+-- if ever needed, delete everything for one session) without having to grep by free-text question content.
 CREATE TABLE query_log (
     id             BIGSERIAL PRIMARY KEY,
     asked_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    session_id     TEXT,
     question       TEXT NOT NULL,
     generated_sql  TEXT,
     status         TEXT NOT NULL,          -- ok | rejected | error
@@ -56,3 +62,4 @@ CREATE INDEX idx_orders_customer ON orders(customer_id);
 CREATE INDEX idx_orders_date ON orders(order_date);
 CREATE INDEX idx_items_order ON order_items(order_id);
 CREATE INDEX idx_refunds_date ON refunds(refunded_at);
+CREATE INDEX idx_query_log_asked_at ON query_log(asked_at);  -- supports the retention prune's DELETE

@@ -1,12 +1,17 @@
-"""Loading and chunking of PDF / DOCX / TXT / Markdown files."""
+"""Loading/chunking of PDF / DOCX / TXT / Markdown files, and directory-ingest orchestration."""
+import logging
 import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.config.settings import settings
+from app.schemas.documents import IngestResponse
+
+log = logging.getLogger("app")
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".markdown"}
 
@@ -42,20 +47,56 @@ def doc_id_for(filename: str) -> str:
 
 
 def load_sections(path: Path) -> list[Section]:
-    """Extract raw text sections by format: one per PDF page, one for DOCX (pre-converted to Markdown)."""
+    """Extract raw text sections by format: one per PDF page, one for DOCX (pre-converted to Markdown).
+
+    A corrupt/malformed file (bad PDF stream, a .docx that isn't really a zip or OPC package) raises a
+    format-specific exception from pypdf/python-docx, not ValueError - normalized to ValueError here so
+    every caller (the /documents/ingest upload route, ingest_directory) only has to handle one "this file
+    is bad" exception, the same as the existing "unsupported type"/"no extractable text" cases.
+    """
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {ext or '(none)'}")
     if ext == ".pdf":
         from pypdf import PdfReader
+        from pypdf.errors import PyPdfError
 
-        reader = PdfReader(str(path))
-        return [Section(p.extract_text() or "", i + 1) for i, p in enumerate(reader.pages)]
+        try:
+            reader = PdfReader(str(path))
+            # Page count is cheap (walks the page tree only); checked before the expensive per-page
+            # extract_text() loop below, so an upload that's small but absurdly many pages (a page-count
+            # bomb - the upload-size cap alone doesn't block this) is rejected without doing that work.
+            if len(reader.pages) > settings.max_pdf_pages:
+                raise ValueError(f"PDF has {len(reader.pages)} pages (> {settings.max_pdf_pages} allowed).")
+            return [Section(p.extract_text() or "", i + 1) for i, p in enumerate(reader.pages)]
+        except PyPdfError as e:
+            raise ValueError(f"Could not read PDF (corrupt or unsupported): {e}") from e
     if ext == ".docx":
         from docx import Document
+        from docx.opc.exceptions import PackageNotFoundError
 
-        return [Section(_docx_to_markdown(Document(str(path))))]
+        _reject_docx_zip_bomb(path)
+        try:
+            return [Section(_docx_to_markdown(Document(str(path))))]
+        except (PackageNotFoundError, BadZipFile) as e:
+            raise ValueError(f"Could not read DOCX (corrupt or unsupported): {e}") from e
     return [Section(path.read_text(encoding="utf-8", errors="replace"))]
+
+
+def _reject_docx_zip_bomb(path: Path) -> None:
+    """A .docx is a zip; the upload-size cap (settings.max_upload_bytes) limits the *compressed* size
+    only, and a small file can still decompress to gigabytes before python-docx (which reads every entry
+    into memory) gets a chance to fail. Sum the archive's own recorded uncompressed sizes - cheap, reads
+    only the central directory - before decompressing anything."""
+    try:
+        with ZipFile(path) as zf:
+            total = sum(info.file_size for info in zf.infolist())
+    except BadZipFile:
+        return  # not a valid zip at all; load_sections()'s own Document(path) call reports that
+    if total > settings.max_docx_decompressed_bytes:
+        raise ValueError(
+            f"DOCX decompresses to {total} bytes (> {settings.max_docx_decompressed_bytes} allowed)."
+        )
 
 
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
@@ -178,3 +219,40 @@ def chunk_sections(sections: list[Section], suffix: str = ".txt") -> list[Chunk]
                 if piece.strip():
                     chunks.append(Chunk(piece.strip(), section.page, len(chunks)))
     return chunks
+
+
+def docs_dir() -> Path:
+    p = Path(settings.documents_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+_QUARANTINE_SUFFIX = ".failed"
+
+
+def ingest_directory(store, force: bool = False) -> IngestResponse:
+    """Index every supported, not-yet-indexed file under docs_dir(); force=True re-embeds everything.
+
+    A file whose own content is the problem (corrupt PDF/DOCX, genuinely empty) is renamed with a
+    trailing ".failed" instead of being left in place: its extension no longer matches
+    SUPPORTED_EXTENSIONS, so the next auto-ingest (every process restart) skips it instead of re-parsing
+    and re-logging the same failure forever. Fix the file and rename it back (drop the ".failed") to
+    retry. A failure that isn't about the file's content (Qdrant/Ollama down) is never reached here - it
+    propagates out of ingest_file() uncaught, same as before, instead of quarantining a perfectly good
+    file because a dependency happened to be down.
+    """
+    indexed = {d.id for d in store.list_documents()} - store.stale_doc_ids()  # old chunker -> re-embed
+    out = IngestResponse(ingested=[])
+    for path in sorted(docs_dir().iterdir()):
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        if not force and doc_id_for(path.name) in indexed:
+            out.skipped.append(path.name)
+            continue
+        try:
+            out.ingested.append(store.ingest_file(path))
+        except ValueError as e:
+            log.error("Quarantining unreadable file %s: %s", path.name, e)
+            out.errors[path.name] = str(e)
+            path.rename(path.with_name(path.name + _QUARANTINE_SUFFIX))
+    return out

@@ -41,10 +41,19 @@ _WRITE_NL = re.compile(
     r"(orders|customers|products|refunds|rows|records|data|tables?|database)\b",
     re.I,
 )
+_SECRET_TERMS = (
+    r"system prompt|hidden instructions?|initial instructions?|passwords?|secrets?|api keys?|"
+    r"credentials|tokens?|connection string"
+)
+# Imperative extraction ("show me your system prompt", "print the API key") or "what is YOUR <secret>" -
+# not any question that merely mentions "password" or "token" ("What is the password policy?", "how do I
+# reset my password?" are legitimate document questions and must not be refused). Bounded filler
+# (`[^.?!]{0,40}`, not the unbounded `[^.?!]*` this replaced) keeps the verb and the secret term from the
+# same clause instead of matching across an entire long sentence. Bare "instructions" is deliberately not
+# a term here - "show me the installation instructions" is an ordinary document request.
 _SECRET = re.compile(
-    r"\b(reveal|show|print|display|tell|give|leak|dump|expose|share|what(?:'s| is))\b[^.?!]*"
-    r"\b(system prompt|hidden instructions?|initial instructions?|instructions|passwords?|secrets?|api keys?|"
-    r"credentials|tokens?|connection string)\b",
+    rf"\b(reveal|show|print|display|tell|give|leak|dump|expose|share)\b[^.?!]{{0,40}}?\b({_SECRET_TERMS})\b"
+    rf"|\bwhat(?:'s| is)\s+your\b[^.?!]{{0,40}}?\b({_SECRET_TERMS})\b",
     re.I,
 )
 

@@ -27,7 +27,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Per-IP rate limiting on the expensive routes (LLM/embedding/DB calls); see chat_routes.py / document_routes.py.
+# Per-IP rate limiting on the expensive routes (LLM/embedding/DB calls); chat_routes.py / document_routes.py.
 app.state.limiter = limiter
 
 
