@@ -13,6 +13,7 @@ from app.models.retrieval import Hit
 from app.repository.conversation_store import ConversationStore
 from app.routes.dependencies import get_graph, require_api_key
 from app.schemas.chat import ChatRequest, ChatResponse, Source, SQLInfo
+from app.services.answer_service import CitationScrubber, as_text
 from app.utils.rate_limit import limiter
 from app.utils.security import sanitize_message
 
@@ -37,7 +38,10 @@ async def chat(req: ChatRequest, request: Request, graph=Depends(get_graph)):
         raise HTTPException(422, "Message is empty.")
     session_id = req.session_id or uuid4().hex
     try:
-        state = await graph.ainvoke(initial_state(message, _conversations.get(session_id)))
+        state = await graph.ainvoke(initial_state(message, _conversations.get(session_id), session_id))
+    except httpx.TimeoutException as e:
+        log.exception("LLM backend timed out")
+        raise HTTPException(504, "Language model backend timed out.") from e
     except (httpx.HTTPError, ConnectionError) as e:
         log.exception("LLM backend unavailable")
         raise HTTPException(503, "Language model backend is unavailable. Is Ollama running with the models pulled?") from e
@@ -53,10 +57,15 @@ async def chat(req: ChatRequest, request: Request, graph=Depends(get_graph)):
 @limiter.limit(lambda: settings.rate_limit_chat)
 async def chat_stream(req: ChatRequest, request: Request, graph=Depends(get_graph)):
     """Same compiled graph as POST /chat (no duplicated routing/retrieval logic), driven by
-    astream_events() instead of invoke() so the answer node's tokens reach the client as they're
-    generated. Emits newline-delimited SSE `data:` frames:
-      {"type": "token", "text": "..."}               - zero or more, raw (pre-citation-scrub) tokens
-      {"type": "done", ...same fields as ChatResponse} - exactly one, with the final scrubbed answer
+    astream(stream_mode=["messages", "values"]) so the answer node's tokens reach the client as they're
+    generated. "values" also yields the full graph state after every node, so the final frame is read
+    straight off its last value - not sniffed out of on_chain_end by guessing which output dict is the
+    graph's own (brittle: it broke if a node's returned keys ever happened to look like the whole state).
+    Citations are scrubbed per-token (CitationScrubber), not just once at the end, so a fabricated
+    [file.md] is never shown to the client even for the instant before the "done" frame arrives.
+    Emits newline-delimited SSE `data:` frames:
+      {"type": "token", "text": "..."}               - zero or more, already citation-scrubbed tokens
+      {"type": "done", ...same fields as ChatResponse} - exactly one, with the final answer
       {"type": "error", "detail": "..."}              - instead of "done", on failure
     """
     message = sanitize_message(req.message)
@@ -66,20 +75,31 @@ async def chat_stream(req: ChatRequest, request: Request, graph=Depends(get_grap
     history = _conversations.get(session_id)
 
     async def events():
-        final_state: dict | None = None
+        state: dict = {}
+        scrubber: CitationScrubber | None = None
         try:
-            async for ev in graph.astream_events(initial_state(message, history), version="v2"):
-                if ev["event"] == "on_chat_model_stream" and ev["metadata"].get("langgraph_node") == "answer":
-                    token = ev["data"]["chunk"].content
-                    token = token if isinstance(token, str) else str(token)
-                    if token:
-                        yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
-                elif ev["event"] == "on_chain_end":
-                    output = ev.get("data", {}).get("output")
-                    # The *graph's* final output carries every state key; a single node's own
-                    # on_chain_end (e.g. the "answer" node returning {"answer": ...}) does not.
-                    if isinstance(output, dict) and "answer" in output and "route" in output:
-                        final_state = output
+            async for mode, chunk in graph.astream(
+                initial_state(message, history, session_id), stream_mode=["messages", "values"]
+            ):
+                if mode == "values":
+                    state = chunk
+                    continue
+                msg, metadata = chunk
+                if metadata.get("langgraph_node") != "answer":
+                    continue
+                if scrubber is None:
+                    # By the time the answer node's model starts streaming, "rag"/"sql" have already run
+                    # and their outputs are in `state` (whichever "values" frame arrived most recently).
+                    route = state.get("route")
+                    hits = state.get("hits") if route in ("document", "both") else None
+                    scrubber = CitationScrubber(hits)
+                token = scrubber.feed(as_text(msg.content))
+                if token:
+                    yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+        except httpx.TimeoutException:
+            log.exception("LLM backend timed out during stream")
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Language model backend timed out.'})}\n\n"
+            return
         except (httpx.HTTPError, ConnectionError):
             log.exception("LLM backend unavailable during stream")
             yield f"data: {json.dumps({'type': 'error', 'detail': 'Language model backend is unavailable.'})}\n\n"
@@ -89,13 +109,17 @@ async def chat_stream(req: ChatRequest, request: Request, graph=Depends(get_grap
             yield f"data: {json.dumps({'type': 'error', 'detail': 'Internal error while answering.'})}\n\n"
             return
 
-        if final_state is None:
+        if "answer" not in state:
             log.error("Stream ended with no final graph state")
             yield f"data: {json.dumps({'type': 'error', 'detail': 'Internal error while answering.'})}\n\n"
             return
+        if scrubber is not None:
+            tail = scrubber.flush()
+            if tail:
+                yield f"data: {json.dumps({'type': 'token', 'text': tail})}\n\n"
 
-        _conversations.add_turn(session_id, message, final_state["answer"])
-        done = {"type": "done", **_build_response(session_id, final_state).model_dump()}
+        _conversations.add_turn(session_id, message, state["answer"])
+        done = {"type": "done", **_build_response(session_id, state).model_dump()}
         yield f"data: {json.dumps(done)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")

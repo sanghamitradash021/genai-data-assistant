@@ -3,6 +3,7 @@ names: tests/fixtures/{deploy_guide.txt, auth_notes.md, equipment_guide.docx, pr
 existing sample documents. Nothing in app/ mentions any of these filenames or topics; if these tests pass,
 the pipeline generalises rather than having been special-cased for CLAUDEEE.md.
 """
+import asyncio
 import hashlib
 import math
 import re
@@ -15,8 +16,8 @@ from app.agents.chat_agent import GraphDeps, build_graph, initial_state
 from app.agents.condense import condense_question
 from app.config.settings import settings
 from app.models.sql import SQLResult
+from app.repository import retrieval
 from app.repository import vector_store as vectorstore
-from app.services import retrieval_service as retrieval
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -52,7 +53,8 @@ class BagOfWords:
         return self._vec(text)
 
 
-FIXTURE_FILES = ["deploy_guide.txt", "auth_notes.md", "equipment_guide.docx", "pricing_policy.pdf"]
+FIXTURE_FILES = ["deploy_guide.txt", "auth_notes.md", "equipment_guide.docx", "pricing_policy.pdf",
+                  "marine_life_aquarium_guide.txt"]
 
 
 @pytest.fixture(scope="module")
@@ -63,9 +65,7 @@ def store():
     mp = pytest.MonkeyPatch()
     mp.setattr(vectorstore, "embeddings", BagOfWords)
     s = vectorstore.VectorStore(client=QdrantClient(":memory:"))
-    files = [FIXTURES / n for n in FIXTURE_FILES] + [
-        DOCS / n for n in ("refund_policy.md", "leave_policy.md", "marine_life_aquarium_guide.txt")
-    ]
+    files = [FIXTURES / n for n in FIXTURE_FILES] + [DOCS / n for n in ("refund_policy.md", "leave_policy.md")]
     for f in files:
         if not f.exists():
             pytest.skip(f"missing fixture {f.name}")
@@ -126,15 +126,19 @@ def test_20_topic_not_in_any_document_returns_nothing(store):
 # ---- root cause of the reported bug: single-intent routing must not rewrite the retrieval question --------
 def make_pipeline(store, llm_route_result):
     sql_calls = []
+
+    async def answer(q, hits, sql, config=None):
+        return ",".join(h.filename for h in (hits or []))
+
     deps = GraphDeps(
         condense=lambda q, h: condense_question(q, h, lambda s, u: "unused"),
         route=lambda q: llm_route_result,
         retrieve=store.search,
-        run_sql=lambda q: (sql_calls.append(q), SQLResult(q))[1],
-        answer=lambda q, hits, sql: ",".join(h.filename for h in (hits or [])),
+        run_sql=lambda q, sid=None: (sql_calls.append(q), SQLResult(q))[1],
+        answer=answer,
     )
     graph = build_graph(deps)
-    return lambda q, history=None: (graph.invoke(initial_state(q, history or [])), sql_calls)
+    return lambda q, history=None: (asyncio.run(graph.ainvoke(initial_state(q, history or []))), sql_calls)
 
 
 @pytest.mark.parametrize("bad_doc_question", [
@@ -160,18 +164,22 @@ def test_single_intent_database_route_also_ignores_llm_rewrite(store):
 def test_both_route_still_uses_the_llm_split_for_the_two_sub_questions():
     from app.models.routing import RouteDecision
     from app.services.routing_service import rule_route
+
+    async def answer(q, hits, sql, config=None):
+        return "ok"
+
     calls = []
     deps = GraphDeps(
         condense=lambda q, h: q,
         route=lambda q: (calls.append(q), RouteDecision(route="both", doc_question="refund policy", db_question="refund total"))[1],
         retrieve=lambda q: calls.append(("rag", q)) or [],
-        run_sql=lambda q: (calls.append(("sql", q)), SQLResult(q))[1],
-        answer=lambda q, hits, sql: "ok",
+        run_sql=lambda q, sid=None: (calls.append(("sql", q)), SQLResult(q))[1],
+        answer=answer,
     )
     q = "what is the refund policy and how much was refunded last month?"
     decision = rule_route(q)
     assert decision is not None and decision.route == "both"
-    out = build_graph(deps).invoke(initial_state(q, []))
+    out = asyncio.run(build_graph(deps).ainvoke(initial_state(q, [])))
     assert out["doc_question"] == "refund policy" and out["db_question"] == "refund total"
 
 

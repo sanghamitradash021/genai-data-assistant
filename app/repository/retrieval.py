@@ -6,7 +6,10 @@ Pipeline (orchestrated by VectorStore.search):
   3 select_context(): cut to the best few, at most a couple per section, so broad questions see several sections
 
 Semantic similarity alone is unreliable on technical text ("which ORM is used?" is about as close to a
-refund policy as to a Database section), so exact terms (ORM, Prisma, pnpm, ...) are a second signal.
+refund policy as to a Database section), so exact terms are a second signal. "Technical-looking" is
+decided structurally (ACRONYM, camelCase, contains a digit) rather than from a fixed vocabulary, so this
+isn't tuned to any one project's tech stack - it works the same whether the corpus talks about React or
+Rails.
 """
 import logging
 import math
@@ -30,13 +33,6 @@ STOPWORDS = frozenset(
     at from as if any get give tell show list have has had also not no yes so than then this that these those it its
     they them their used use uses using project document documents doc docs file according say says said mention
     mentioned described explain please company""".split()
-)
-# Common technology vocabulary: extra weight even when typed in lowercase ("pnpm", "orm").
-TECH_TERMS = frozenset(
-    """orm prisma zod zustand vitest jest pnpm npm yarn react vite tailwind typescript javascript node express
-    postgres postgresql sql jwt bcrypt docker nginx redis graphql rest api sdk cli css html json yaml eslint husky
-    axios router redux next vue angular python fastapi django flask kubernetes linux git ci cd oauth ssl tls http
-    https qdrant ollama langchain""".split()
 )
 _BROAD = re.compile(
     r"\b(rules|standards|conventions|guidelines|practices|overview|summary|summari[sz]e|everything|all|list|"
@@ -137,9 +133,9 @@ def query_terms(query: str) -> dict[str, str]:
 
 
 def _is_technical(raw: str) -> bool:
-    """Heuristic for "looks like a technical term" (known word, ACRONYM, has a digit, or camelCase)."""
-    return (raw.lower() in TECH_TERMS or (raw.isupper() and len(raw) >= 2) or any(c.isdigit() for c in raw)
-            or bool(re.search(r"[a-z][A-Z]", raw)))
+    """Heuristic for "looks like a technical term" (ACRONYM, has a digit, or camelCase) - structural, not
+    a fixed vocabulary, so it isn't biased toward whichever tech stack a sample document happens to use."""
+    return (raw.isupper() and len(raw) >= 2) or any(c.isdigit() for c in raw) or bool(re.search(r"[a-z][A-Z]", raw))
 
 
 def _chunk_tokens(h: Hit) -> tuple[set[str], set[str]]:

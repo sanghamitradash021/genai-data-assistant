@@ -6,8 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY requirements.lock.txt .
+RUN pip install -r requirements.lock.txt
 
 RUN useradd --create-home --uid 1001 appuser
 COPY app ./app
