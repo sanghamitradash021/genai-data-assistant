@@ -1,6 +1,7 @@
 """Retrieval pipeline tests. Unit tests on the pure ranking functions, plus end-to-end tests of
 VectorStore.search on the real CLAUDEEE.md and the sample documents, using an in-memory Qdrant and a
 deterministic bag-of-words embedder (so no Ollama is needed; semantic quality itself is checked live)."""
+import asyncio
 import hashlib
 import math
 import re
@@ -12,8 +13,8 @@ from qdrant_client import QdrantClient
 
 from app.config.settings import settings
 from app.models.retrieval import Hit
+from app.repository import retrieval
 from app.repository import vector_store as vectorstore
-from app.services import retrieval_service as retrieval
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -138,7 +139,7 @@ def test_query_expansion_maps_vague_concepts_to_document_vocabulary():
 
 def test_debug_logging_lists_candidates_with_scores(caplog):
     cfg = settings.model_copy(update={"rag_debug": True})
-    with caplog.at_level("INFO", logger="app.services.retrieval_service"):
+    with caplog.at_level("INFO", logger="app.repository.retrieval"):
         retrieval.rank_candidates("which ORM is used?", [hit("c.md", "ORM Prisma", "Database", 0.7)], cfg=cfg)
     text = caplog.text
     assert "Query: which ORM is used?" in text and "Section: Database" in text
@@ -185,8 +186,9 @@ def store():
     emb = BagOfWords()
     mp.setattr(vectorstore, "embeddings", lambda: emb)
     s = vectorstore.VectorStore(client=QdrantClient(":memory:"))
-    files = [FIXTURES / "CLAUDEEE.md"] + [DOCS / n for n in
-             ("refund_policy.md", "marine_life_aquarium_guide.txt", "leave_policy.md", "shipping_faq.md")]
+    files = [FIXTURES / n for n in ("CLAUDEEE.md", "marine_life_aquarium_guide.txt")] + [
+        DOCS / n for n in ("refund_policy.md", "leave_policy.md", "shipping_faq.md")
+    ]
     for f in files:
         if not f.exists():
             pytest.skip(f"missing sample document {f.name}")
@@ -311,20 +313,25 @@ def test_stale_documents_are_detected_for_reindexing(store):
 # ---------------------------------------------------------------- full graph on the real document ---------
 @pytest.fixture
 def pipeline(store):
-    from app.agents.chat_agent import GraphDeps, _format_context, build_graph, initial_state
+    from app.agents.chat_agent import GraphDeps, build_graph, initial_state
     from app.agents.condense import condense_question
     from app.models.sql import SQLResult
+    from app.services.answer_service import format_context
 
     sql_calls = []
+
+    async def answer(q, hits, sql, config=None):
+        return format_context(hits, sql)  # what the LLM would be given
+
     deps = GraphDeps(
         condense=lambda q, h: condense_question(q, h, lambda s, u: "unused"),
         route=lambda q: (_ for _ in ()).throw(RuntimeError("LLM router unavailable")),
         retrieve=store.search,
-        run_sql=lambda q: (sql_calls.append(q), SQLResult(q))[1],
-        answer=lambda q, hits, sql: _format_context(hits, sql),  # what the LLM would be given
+        run_sql=lambda q, sid=None: (sql_calls.append(q), SQLResult(q))[1],
+        answer=answer,
     )
     graph = build_graph(deps)
-    return lambda q, history=None: (graph.invoke(initial_state(q, history or [])), sql_calls)
+    return lambda q, history=None: (asyncio.run(graph.ainvoke(initial_state(q, history or []))), sql_calls)
 
 
 @pytest.mark.parametrize("q", ["which ORM is used?", "which ORM is used in CLAUDEEE.md?"])

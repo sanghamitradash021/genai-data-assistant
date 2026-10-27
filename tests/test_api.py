@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -79,6 +80,21 @@ def test_chat_validation(client, body):
     assert client.post("/chat", json=body).status_code == 422
 
 
+def test_chat_whitespace_only_message_is_422_after_sanitizing(client):
+    # Passes Pydantic's min_length=1 (it's non-empty text) but sanitize_message() strips it to "" -
+    # a second, code-level empty-message check, not just schema validation.
+    assert client.post("/chat", json={"message": "   "}).status_code == 422
+
+
+def test_chat_pipeline_failure_is_a_500_not_an_unhandled_exception(client):
+    async def boom(state):
+        raise RuntimeError("something inside the graph broke")
+
+    client.graph.ainvoke = boom
+    r = client.post("/chat", json={"message": "hi"})
+    assert r.status_code == 500
+
+
 def test_list_and_delete_document(client):
     (client.tmp / "a.txt").write_text("x")
     assert client.get("/documents").json()[0]["id"] == "d1"
@@ -94,6 +110,73 @@ def test_ingest_upload_and_rejects(client):
     assert bad.status_code == 415
 
 
+def test_ingest_upload_of_a_corrupt_file_is_a_422_not_a_500(client):
+    """store.ingest_file() raises the real VectorStore's ValueError for a corrupt PDF/DOCX (see
+    test_documents.py); the route must turn that into a 422 and clean up the half-written upload, not
+    let it fall through as an unhandled exception -> generic 500."""
+
+    def ingest_file(path):
+        raise ValueError("Could not read PDF (corrupt or unsupported): bad stream")
+
+    client.store.ingest_file = ingest_file
+    r = client.post("/documents/ingest", files={"file": ("bad.pdf", b"not a real pdf", "application/pdf")})
+    assert r.status_code == 422
+    assert not (client.tmp / "bad.pdf").exists()
+
+
+def test_ingest_reuploading_a_corrupt_file_does_not_destroy_the_existing_good_one(client):
+    """Regression: re-uploading a file under a name that's already on disk used to write the new (bad)
+    bytes straight over the old file, then delete it on failure - losing the previously-good content with
+    no way to recover it, even though its vectors were still indexed. The new content must be validated
+    in a temp location before it ever touches the real file."""
+    existing = client.tmp / "leave_policy.md"
+    existing.write_text("ORIGINAL GOOD CONTENT")
+
+    def ingest_file(path):
+        raise ValueError("Could not read PDF (corrupt or unsupported): bad stream")
+
+    client.store.ingest_file = ingest_file
+    r = client.post("/documents/ingest", files={"file": ("leave_policy.md", b"corrupt replacement", "text/markdown")})
+    assert r.status_code == 422
+    assert existing.read_text() == "ORIGINAL GOOD CONTENT"  # untouched, not overwritten then deleted
+    assert list(client.tmp.iterdir()) == [existing]  # no leftover temp file/directory either
+
+
+def test_ingest_file_too_large_is_413(client):
+    original = main.settings.max_upload_bytes
+    object.__setattr__(main.settings, "max_upload_bytes", 10)
+    try:
+        r = client.post("/documents/ingest", files={"file": ("big.txt", b"x" * 20, "text/plain")})
+    finally:
+        object.__setattr__(main.settings, "max_upload_bytes", original)
+    assert r.status_code == 413
+    assert not (client.tmp / "big.txt").exists()
+
+
+def test_ingest_backend_unavailable_during_ingest_is_503(client):
+    def ingest_file(path):
+        raise ConnectionError("qdrant unreachable")
+
+    client.store.ingest_file = ingest_file
+    r = client.post("/documents/ingest", files={"file": ("a.md", b"hello", "text/markdown")})
+    assert r.status_code == 503
+
+
+def test_ingest_two_different_files_concurrently_both_succeed(client):
+    """Not a deep race-condition stress test - just confirms concurrent uploads of different filenames
+    don't clobber each other's temp files (each gets its own temp directory) or the response."""
+    import concurrent.futures
+
+    def upload(name):
+        return client.post("/documents/ingest", files={"file": (name, b"content", "text/plain")})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(upload, ["one.txt", "two.txt"]))
+    assert [r.status_code for r in results] == [200, 200]
+    assert (client.tmp / "one.txt").read_bytes() == b"content"
+    assert (client.tmp / "two.txt").read_bytes() == b"content"
+
+
 def test_ingest_directory_skips_indexed(client):
     (client.tmp / "new.md").write_text("x")
     (client.tmp / "ignored.bin").write_text("x")
@@ -103,6 +186,26 @@ def test_ingest_directory_skips_indexed(client):
 
 def test_live(client):
     assert client.get("/health/live").json() == {"status": "ok"}
+
+
+def test_chat_backend_timeout_is_a_504_distinct_from_backend_down(client):
+    """A hung Ollama (ChatOllama's client_kwargs={"timeout": ...}) raises httpx.TimeoutException, which
+    must map to 504 - distinct from httpx.ConnectError/ConnectionError (Ollama not running at all), which
+    stays a 503. Flapping between the two would otherwise make an operator chase the wrong failure mode."""
+    from app.utils.rate_limit import limiter
+
+    async def timed_out(state):
+        raise httpx.ReadTimeout("model took too long")
+
+    client.graph.ainvoke = timed_out
+    assert client.post("/chat", json={"message": "hi"}).status_code == 504
+
+    async def down(state):
+        raise ConnectionError("Ollama not running")
+
+    client.graph.ainvoke = down
+    assert client.post("/chat", json={"message": "hi"}).status_code == 503
+    limiter.reset()  # these 2 extra /chat calls must not eat into other tests' shared rate-limit quota
 
 
 def test_sources_expose_section_and_heading_but_hide_debug_by_default(client):

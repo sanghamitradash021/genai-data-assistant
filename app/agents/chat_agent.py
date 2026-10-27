@@ -1,15 +1,13 @@
 """LangGraph pipeline:  condense -> route -> (rag | sql | rag+sql in parallel) -> answer.
 
 This is the chat "agent": the orchestrator that wires together the condensation, routing, RAG and SQL
-steps into one LangGraph StateGraph.
+steps into one LangGraph StateGraph. Citation scrubbing and context formatting for the answer prompt live
+in app/services/answer_service.py, not here.
 """
-import inspect
-import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -19,14 +17,9 @@ from app.models.retrieval import Hit
 from app.models.routing import RouteDecision
 from app.models.sql import SQLResult
 from app.services.routing_service import rule_route
-from app.utils.security import is_sensitive_request, is_write_request, looks_like_injection, neutralize_context
+from app.utils.security import is_sensitive_request, is_write_request, looks_like_injection
 
 log = logging.getLogger(__name__)
-
-# Named so build_graph() can `cast()` d.answer to whichever one actually applies in each branch
-# (see _answer_sync/_answer_async below) instead of leaving it as the ambiguous union on GraphDeps.
-_SyncAnswer = Callable[[str, list[Hit] | None, SQLResult | None], str]
-_AsyncAnswer = Callable[[str, list[Hit] | None, SQLResult | None, RunnableConfig], Awaitable[str]]
 
 
 def heuristic_route(question: str) -> RouteDecision:
@@ -38,6 +31,7 @@ class ChatState(TypedDict):
     """Every field is set by initial_state(); each node only ever reads fields earlier nodes already wrote."""
 
     question: str
+    session_id: str | None
     history: list[dict]
     standalone: str
     history_used: bool
@@ -51,26 +45,29 @@ class ChatState(TypedDict):
 
 @dataclass
 class GraphDeps:
-    """Injected capabilities, so the graph wiring can be tested without any model or service."""
+    """Injected capabilities, so the graph wiring can be tested without any model or service.
+
+    `answer` is always async: the real implementation streams tokens (graph.astream_events() is how
+    POST /chat/stream gets them to the client), and the app only ever drives this graph with
+    graph.ainvoke()/.astream_events(), never the sync .invoke(). Test fakes are async too (see tests/).
+    """
 
     condense: Callable[[str, list[dict]], str]
     route: Callable[[str], RouteDecision]
     retrieve: Callable[[str], list[Hit]]
-    run_sql: Callable[[str], SQLResult]
-    # Either a plain sync `answer(question, hits, sql) -> str` (what every test fake uses - gets the
-    # sync "answer" node below, so graph.invoke() keeps working exactly as before), or an async
-    # `answer(question, hits, sql, config) -> str` (what default_deps() below provides - gets the
-    # async "answer" node, which is what makes real token-by-token streaming via
-    # graph.astream_events()/.ainvoke() possible). build_graph() picks the node variant to match
-    # whichever one `d.answer` actually is (inspect.iscoroutinefunction check there), and `cast()`s
-    # back to the precise type in each branch - see _SyncAnswer/_AsyncAnswer above.
-    answer: _SyncAnswer | _AsyncAnswer
+    run_sql: Callable[[str, str | None], SQLResult]
+    answer: Callable[[str, list[Hit] | None, SQLResult | None, RunnableConfig | None], Awaitable[str]]
 
 
-def initial_state(question: str, history: list[dict]) -> ChatState:
-    """Every request starts from a clean slate; nothing carries over from earlier invocations."""
+def initial_state(question: str, history: list[dict], session_id: str | None = None) -> ChatState:
+    """Every request starts from a clean slate; nothing carries over from earlier invocations.
+
+    `session_id` is only ever used to tag the query_log audit row (app/agents/sql_agent.py) with which
+    chat session it came from; nothing in the graph's own routing/retrieval/answer logic reads it.
+    """
     return {
         "question": question,
+        "session_id": session_id,
         "history": history,
         "standalone": "",
         "history_used": False,
@@ -100,9 +97,16 @@ def build_graph(d: GraphDeps):
         try:
             if decision is None:
                 decision = d.route(q)
-            elif decision.route == "both":  # rules know it's both; LLM only splits the sub-questions
+            elif decision.route == "both":
+                # rules already know it's "both" and have their own best-effort split (rule_route's
+                # _split_combined); the LLM only refines that split, and falls back to it - not to the
+                # whole unsplit question - if the LLM call comes back empty.
                 split = d.route(q)
-                decision = RouteDecision(route="both", doc_question=split.doc_question, db_question=split.db_question)
+                decision = RouteDecision(
+                    route="both",
+                    doc_question=split.doc_question.strip() or decision.doc_question,
+                    db_question=split.db_question.strip() or decision.db_question,
+                )
         except Exception:
             log.exception("LLM router failed; using keyword rules")
             decision = decision or heuristic_route(q)
@@ -128,7 +132,7 @@ def build_graph(d: GraphDeps):
 
     def sql(state: ChatState) -> dict:
         try:
-            return {"sql": d.run_sql(state["db_question"])}
+            return {"sql": d.run_sql(state["db_question"], state.get("session_id"))}
         except Exception:
             log.exception("SQL agent failed")
             return {"sql": SQLResult(state["db_question"], error="The database is currently unavailable.")}
@@ -148,24 +152,9 @@ def build_graph(d: GraphDeps):
         )
         return hits, sql_res
 
-    # LangGraph decides per-node, once, whether to run it sync or async - a node that is `async def`
-    # cannot be run at all by graph.invoke() (only by .ainvoke()/.astream()/.astream_events()), so
-    # which variant to register has to match what d.answer actually is. Every test fake passes a
-    # plain sync answer() and keeps using graph.invoke() unchanged; default_deps() below passes an
-    # async one so the real app gets real token streaming.
-    async def _answer_async(state: ChatState, config: RunnableConfig) -> dict:
+    async def answer(state: ChatState, config: RunnableConfig) -> dict:
         hits, sql_res = _prep_answer(state)
-        # Safe: this branch is only ever registered when inspect.iscoroutinefunction(d.answer) is True
-        # (see `answer = ...` below) - the cast just tells the type checker what that check guarantees.
-        fn = cast(_AsyncAnswer, d.answer)
-        return {"answer": await fn(state["standalone"], hits, sql_res, config)}
-
-    def _answer_sync(state: ChatState) -> dict:
-        hits, sql_res = _prep_answer(state)
-        fn = cast(_SyncAnswer, d.answer)
-        return {"answer": fn(state["standalone"], hits, sql_res)}
-
-    answer = _answer_async if inspect.iscoroutinefunction(d.answer) else _answer_sync
+        return {"answer": await d.answer(state["standalone"], hits, sql_res, config)}
 
     def pick(state: ChatState) -> list[str]:
         return {"document": ["rag"], "database": ["sql"], "both": ["rag", "sql"]}[state["route"]]
@@ -185,42 +174,6 @@ def build_graph(d: GraphDeps):
 # ---------------------------------------------------------------------------
 # Default LLM-backed implementations
 # ---------------------------------------------------------------------------
-_CITATION = re.compile(r"\s*\[([^\[\]]+?\.(?:md|markdown|txt|pdf|docx))(?:[^\[\]]*)\]", re.I)
-
-
-def scrub_citations(answer: str, hits: list[Hit] | None) -> str:
-    """Drop [file] citations the model made up: only files actually retrieved may be cited."""
-    allowed = {h.filename.lower() for h in hits or []}
-    return _CITATION.sub(lambda m: m.group(0) if m.group(1).strip().lower() in allowed else "", answer)
-
-
-def _format_context(hits: list[Hit] | None, sql: SQLResult | None) -> str:
-    """Render retrieved hits / SQL results into the <documents>/<sql_result> blocks the answer prompt expects."""
-    parts = []
-    if hits is not None:
-        body = "\n\n".join(
-            f"[{h.filename}{f' - section: {h.heading_path or h.section}' if (h.heading_path or h.section) else ''}"
-            f"{f', page {h.page}' if h.page else ''}]\n{neutralize_context(h.text)}" for h in hits
-        ) or "No relevant passages found."
-        parts.append(f"<documents>\n{body}\n</documents>")
-    if sql is not None:
-        if sql.error:
-            body = f"Query failed: {sql.error}"
-        else:
-            body = (
-                f"SQL: {sql.sql}\ncolumns: {sql.columns}\nrows ({len(sql.rows)}): "
-                f"{json.dumps(sql.rows[:50], default=str)}"
-            )
-        parts.append(f"<sql_result>\n{body}\n</sql_result>")
-    return "\n\n".join(parts)
-
-
-def _as_text(content: str | list[str | dict]) -> str:
-    """AIMessage.content is typed as str | list[...] (multimodal models can return content blocks);
-    this project only ever talks to text-only Ollama models, so it is always str in practice."""
-    return content if isinstance(content, str) else str(content)
-
-
 def default_deps(store) -> GraphDeps:
     """The real GraphDeps: Ollama-backed condense/route/answer plus the given store's retrieval and SQL agent."""
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -229,10 +182,11 @@ def default_deps(store) -> GraphDeps:
     from app.llms.ollama_client import chat_model, structured
     from app.prompts.answer_prompt import ANSWER_SYSTEM
     from app.prompts.router_prompt import ROUTER_SYSTEM
+    from app.services.answer_service import as_text, format_context, scrub_citations
 
     def condense(question: str, history: list[dict]) -> str:
         def llm(system: str, user: str) -> str:
-            return _as_text(chat_model().invoke([SystemMessage(system), HumanMessage(user)]).content)
+            return as_text(chat_model().invoke([SystemMessage(system), HumanMessage(user)]).content)
 
         return condense_question(question, history, llm)
 
@@ -243,9 +197,8 @@ def default_deps(store) -> GraphDeps:
         return result if isinstance(result, RouteDecision) else RouteDecision.model_validate(result)
 
     async def answer(question: str, hits, sql, config: RunnableConfig | None = None) -> str:
-        """Builds the exact same prompt as before; the only change is astream() instead of invoke(),
-        with `config` passed through so a graph.astream_events() caller sees each token as it's
-        generated (graph.invoke() just awaits this the same way and gets the final string back)."""
+        """Streams the model's reply (astream, not invoke) so a graph.astream_events() caller sees each
+        token as it's generated; graph.ainvoke() just awaits this the same way and gets the final string."""
         if is_sensitive_request(question) and not is_write_request(question):
             log.warning("Refused sensitive request (injection / secret extraction)")
             return "I can't help with that request."
@@ -253,10 +206,10 @@ def default_deps(store) -> GraphDeps:
             log.warning("Possible prompt injection in user message")
         if hits == [] and sql is None:  # nothing retrieved: don't let the model answer from memory
             return "I couldn't find anything relevant in the company documents to answer that."
-        human = f"{_format_context(hits, sql)}\n\nQuestion: {question}"
+        human = f"{format_context(hits, sql)}\n\nQuestion: {question}"
         parts: list[str] = []
         async for chunk in chat_model().astream([SystemMessage(ANSWER_SYSTEM), HumanMessage(human)], config=config):
-            parts.append(_as_text(chunk.content))
+            parts.append(as_text(chunk.content))
         reply = "".join(parts).strip()
         return scrub_citations(reply, hits)
 

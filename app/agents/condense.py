@@ -2,7 +2,9 @@
 
 Small local LLMs "helpfully" glue earlier context onto questions that are already complete
 ("What causes coral bleaching?" -> "...to manta rays"). So history is used only when the current question
-cannot stand alone, decided by code, with no domain vocabulary:
+cannot stand alone, decided by code using only closed-class English (pronouns, question words, generic
+words like "limit"/"cost") - no business- or project-specific vocabulary, so this works the same for any
+corpus:
 
   1. needs_rewrite()   - counts the question's own *specific* terms (words that are not question words,
                          function words or generic words like "time"/"limit"/"cost"). A question with its own

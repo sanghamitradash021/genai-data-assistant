@@ -1,5 +1,6 @@
 """POST /documents/ingest, GET /documents, DELETE /documents/{id}."""
 import logging
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -9,7 +10,7 @@ from app.config.settings import settings
 from app.routes.dependencies import get_store, require_api_key
 from app.schemas.documents import DocumentInfo, IngestResponse
 from app.services import document_service as documents
-from app.starter import docs_dir, ingest_directory
+from app.services.document_service import docs_dir, ingest_directory
 from app.utils.rate_limit import limiter
 from app.utils.security import safe_filename
 
@@ -36,13 +37,22 @@ def ingest(
         data = file.file.read(settings.max_upload_bytes + 1)
         if len(data) > settings.max_upload_bytes:
             raise HTTPException(413, f"File exceeds {settings.max_upload_bytes} bytes.")
+        # Written to a same-filesystem temp dir and ingested from there first, not straight to docs_dir():
+        # re-uploading a file under a name that's already indexed (e.g. a routine re-upload of
+        # leave_policy.md) used to overwrite that file on disk immediately, so a corrupt replacement
+        # destroyed the previously-good file's bytes before validation ever ran, with no way to recover
+        # them (the old vectors stayed in Qdrant, now pointing at a file that no longer exists). The real
+        # path is only touched - via an atomic rename - after store.ingest_file() has already succeeded.
         path = docs_dir() / name
-        path.write_bytes(data)
-        try:
-            return IngestResponse(ingested=[store.ingest_file(path)])
-        except ValueError as e:
-            path.unlink(missing_ok=True)
-            raise HTTPException(422, str(e)) from e
+        with tempfile.TemporaryDirectory(dir=docs_dir()) as tmp_dir:
+            tmp_path = Path(tmp_dir) / name
+            tmp_path.write_bytes(data)
+            try:
+                info = store.ingest_file(tmp_path)
+            except ValueError as e:
+                raise HTTPException(422, str(e)) from e
+            tmp_path.replace(path)
+        return IngestResponse(ingested=[info])
     except HTTPException:
         raise
     except (httpx.HTTPError, ConnectionError) as e:

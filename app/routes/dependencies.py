@@ -1,28 +1,15 @@
 """Shared FastAPI dependency providers, used by every router and by app/health.py.
 
 Kept in one place (and re-exported from app.main for convenience/tests) so `app.main.app.dependency_overrides`
-always targets the exact same callables the routers depend on.
+always targets the exact same callables the routers depend on. get_store/get_graph themselves live in
+app.container (not here), so app.starter can use them without importing the routes layer.
 """
 import hmac
-from functools import lru_cache
 
 from fastapi import Header, HTTPException
 
 from app.config.settings import settings
-
-
-@lru_cache
-def get_store():
-    from app.repository.vector_store import VectorStore
-
-    return VectorStore()
-
-
-@lru_cache
-def get_graph():
-    from app.agents.chat_agent import build_graph, default_deps
-
-    return build_graph(default_deps(get_store()))
+from app.container import get_graph, get_store  # noqa: F401  (re-exported for routers/tests)
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
